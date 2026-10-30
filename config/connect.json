@@ -1,0 +1,15 @@
+{
+  "provider": "puter",
+  "models": {
+    "puter": {
+      "model": "gpt-5.4-nano"
+    },
+    "gemini": {
+      "model": "gemini-3.7-flash",
+      "thinking": "off"
+    },
+    "openai": {
+      "model": "gpt-6-astra"
+    }
+  }
+}

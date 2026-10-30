@@ -1,0 +1,47 @@
+{
+  "model": "gpt-5.4-nano",
+  "workspace": "./workspace",
+  "mode": "build",
+  "maxSteps": 60,
+  "requestTimeoutMs": 120000,
+  "retry": {
+    "retries": 3,
+    "baseDelayMs": 1000,
+    "maxDelayMs": 15000
+  },
+  "search": {
+    "providers": [
+      "searxng",
+      "duckduckgo",
+      "wikipedia"
+    ],
+    "searxngUrls": [
+      "https://searx.be",
+      "https://search.inetol.net",
+      "https://priv.au",
+      "https://searx.tiekoetter.com"
+    ],
+    "searxngEngines": "",
+    "maxResults": 8,
+    "timeoutMs": 10000,
+    "fetchTimeoutMs": 20000
+  },
+  "limits": {
+    "maxReadBytes": 200000,
+    "maxToolResultChars": 20000,
+    "commandTimeoutMs": 60000,
+    "maxCommandOutputChars": 20000
+  },
+  "approvals": {
+    "createFile": false,
+    "overwriteFile": true,
+    "editFile": false,
+    "deleteFile": true,
+    "moveFile": true,
+    "createDirectory": false,
+    "runCommand": true
+  },
+  "security": {
+    "outsideWorkspace": "ask"
+  }
+}

@@ -1,0 +1,118 @@
+import { ToolError } from '../utils/errors.js';
+
+function typeOk(value, type) {
+  switch (type) {
+    case 'string':
+      return typeof value === 'string';
+    case 'number':
+      return typeof value === 'number' && Number.isFinite(value);
+    case 'integer':
+      return Number.isInteger(value);
+    case 'boolean':
+      return typeof value === 'boolean';
+    case 'array':
+      return Array.isArray(value);
+    case 'object':
+      return value !== null && typeof value === 'object' && !Array.isArray(value);
+    default:
+      return true;
+  }
+}
+
+/** Minimal JSON-Schema check (required, type, enum). Returns an error string or null. */
+export function validateArgs(schema, args) {
+  if (args === null || typeof args !== 'object' || Array.isArray(args)) {
+    return 'Arguments must be a JSON object.';
+  }
+  for (const key of schema.required ?? []) {
+    if (args[key] === undefined || args[key] === null) return `Missing required argument "${key}".`;
+  }
+  for (const [key, spec] of Object.entries(schema.properties ?? {})) {
+    const value = args[key];
+    if (value === undefined || value === null) continue;
+    if (spec.type && !typeOk(value, spec.type)) return `Argument "${key}" must be of type ${spec.type}.`;
+    if (spec.enum && !spec.enum.includes(value)) {
+      return `Argument "${key}" must be one of: ${spec.enum.join(', ')}.`;
+    }
+  }
+  return null;
+}
+
+/** Serialise a tool result for the model, truncating very large output. */
+export function formatResult(result, maxChars = 20000) {
+  const text = JSON.stringify(result);
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars)}\n...[truncated ${text.length - maxChars} characters]`;
+}
+
+/**
+ * A tool is: { name, description, parameters (JSON Schema), execute(args, ctx) }.
+ * execute() returns a plain object (may include a `summary` string for the UI) or
+ * throws. The registry converts every outcome into { ok, result | error } so a
+ * failing tool never crashes the agent loop - the model just sees the error.
+ */
+export class ToolRegistry {
+  #tools = new Map();
+
+  register(tool) {
+    const { name, description, execute } = tool;
+    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name ?? '')) throw new Error(`Invalid tool name: ${name}`);
+    if (typeof description !== 'string' || !description) throw new Error(`Tool ${name}: missing description`);
+    if (typeof execute !== 'function') throw new Error(`Tool ${name}: missing execute()`);
+    if (this.#tools.has(name)) throw new Error(`Duplicate tool: ${name}`);
+    this.#tools.set(name, {
+      ...tool,
+      parameters: tool.parameters ?? { type: 'object', properties: {} },
+    });
+    return this;
+  }
+
+  registerAll(tools) {
+    for (const tool of tools) this.register(tool);
+    return this;
+  }
+
+  has(name) {
+    return this.#tools.has(name);
+  }
+
+  list() {
+    return [...this.#tools.values()];
+  }
+
+  /** Tool definitions in the OpenAI / Puter `tools` format. */
+  definitions({ readOnly = false } = {}) {
+    return this.list()
+      .filter((t) => !readOnly || t.readOnly)
+      .map((t) => ({
+      type: 'function',
+      function: { name: t.name, description: t.description, parameters: t.parameters },
+    }));
+  }
+
+  async execute(name, args, ctx) {
+    const tool = this.#tools.get(name);
+    if (!tool) {
+      return {
+        ok: false,
+        error: `Unknown tool "${name}". Available tools: ${[...this.#tools.keys()].join(', ')}.`,
+      };
+    }
+    if (ctx?.mode === 'plan' && !tool.readOnly) {
+      return {
+        ok: false,
+        error: `"${name}" is not available in PLAN mode (read-only). Finish the plan and tell the user to switch with /build.`,
+      };
+    }
+    const invalid = validateArgs(tool.parameters, args);
+    if (invalid) return { ok: false, error: invalid };
+    try {
+      const result = await tool.execute(args, ctx);
+      return { ok: true, result: result ?? {} };
+    } catch (err) {
+      if (err instanceof ToolError) return { ok: false, error: err.message };
+      // Unexpected failures (usually filesystem errors): keep Node's message, which names the path.
+      return { ok: false, error: err?.code ? `${err.code}: ${err.message}` : String(err?.message ?? err) };
+    }
+  }
+}

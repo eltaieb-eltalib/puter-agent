@@ -1,0 +1,25 @@
+{
+  "name": "puter-agent",
+  "version": "0.2.0",
+  "description": "Lightweight autonomous AI coding agent for the terminal, powered by Puter.js and Node.js",
+  "type": "module",
+  "main": "index.js",
+  "bin": {
+    "puter-agent": "index.js"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "test": "node --test",
+    "eval": "node evals/run.js"
+  },
+  "engines": {
+    "node": ">=20.3.0"
+  },
+  "license": "MIT",
+  "private": true,
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "@heyputer/puter.js": "^2.6.3",
+    "openai": "^7.45.0"
+  }
+}
