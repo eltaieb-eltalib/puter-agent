@@ -5,7 +5,8 @@ import { renderMarkdownToTerminal } from '../utils/markdown-to-terminal.js';
 import { resolveTheme } from './themes.js';
 import { classifyError, ErrorKind, explainError } from '../utils/errors.js';
 import { COMMANDS, chooseModel, runCommand } from './commands.js';
-import { centre, logoLines } from './home.js';
+import { expandCustomCommand, listCustomCommands } from '../core/custom-commands.js';
+import { centre, logoLines, homePanel } from './home.js';
 import { createInput, stringWidth } from './input.js';
 import { redactSecrets } from '../utils/redact.js';
 
@@ -57,8 +58,24 @@ const TOOL_COLOR = {
   run_command: teal,
   run_node: teal,
   run_python: teal,
+  open_path: teal,
   web_search: violet,
   web_fetch: violet,
+};
+
+// What each permission is called in the dialog, and how risky it looks.
+const ACTION_TITLE = {
+  runCommand: ['Run a command or script', 'warn'],
+  deleteFile: ['Delete a file', 'danger'],
+  overwriteFile: ['Overwrite an existing file', 'warn'],
+  moveFile: ['Move / rename a file', 'warn'],
+  editFile: ['Edit a file', 'info'],
+  createFile: ['Create a file', 'info'],
+  createDirectory: ['Create a folder', 'info'],
+  outside: ['Access outside the workspace', 'danger'],
+  readSecret: ['Read a file that may hold secrets', 'danger'],
+  openPath: ['Open with the default app', 'warn'],
+  mcp: ['Call an MCP tool (external server)', 'warn'],
 };
 
 const ACTION_LABEL = {
@@ -69,8 +86,17 @@ const ACTION_LABEL = {
   editFile: 'all edits',
   createFile: 'all file creation',
   outside: 'outside-workspace access',
+  openPath: 'opening files / links',
+  mcp: 'MCP tool calls',
   readSecret: 'reading secret files',
 };
+
+/** Keep the END of a long path (the folder name matters most): "…/puter-agent/workspace". */
+export function shortenPath(p, max) {
+  const str = String(p);
+  if (str.length <= max) return str;
+  return `…${str.slice(str.length - Math.max(1, max - 1))}`;
+}
 
 export class TerminalUI {
   constructor({ agent, provider, settings, version, tui }) {
@@ -113,19 +139,13 @@ export class TerminalUI {
   }
 
   banner() {
-    const mode = this.agent.mode === 'plan' ? orange('plan (read-only)') : teal('build');
-    console.log(
-      `\n${card(
-        `Puter Agent ${gray(`v${this.version}`)}`,
-        [
-          `${gray('model  ')} ${this.agent.model}${this.thinkingLabel()}`,
-          `${gray('mode   ')} ${mode}`,
-          `${gray('folder ')} ${this.agent.guard.root}`,
-        ],
-        gray(`/help commands ${sym.sep} /plan /build ${sym.sep} Ctrl+C cancels`),
-        violet,
-      )}\n`,
-    );
+    const mode = this.agent.mode === 'plan' ? orange('PLAN · READ ONLY') : teal('BUILD · ACTIVE');
+    const providerName = this.provider?.name || this.provider?.id || this.settings.provider || 'connected';
+    const width = Math.max(34, Math.min(76, (stdout.columns || 80) - 8));
+    const rule = violet(`  ╭${'─'.repeat(width)}╮`);
+    const edge = violet('  │');
+    const end = violet(`  ╰${'─'.repeat(width)}╯`);
+    console.log(`\n${rule}\n${edge}  ${violet(sym.ai)} ${color.bold('PUTER AGENT')} ${gray(`v${this.version}`)}${' '.repeat(Math.max(1, width - 27 - String(this.version).length))}${edge}\n${edge}  ${gray('MODEL')}  ${color.bold(this.agent.model)}${gray(this.thinkingLabel())}${edge}\n${edge}  ${gray('ENGINE')} ${providerName}   ${gray('MODE')} ${mode}${edge}\n${edge}  ${gray('WORKSPACE')} ${this.#folderLabel()}${edge}\n${end}\n  ${gray('/help')} ${gray('commands')}  ${sym.sep}  ${gray('Shift+Tab')} ${gray('switch mode')}  ${sym.sep}  ${gray('Ctrl+C')} ${gray('cancel')}\n`);
   }
 
   /** Non-interactive: run one request (`-p "text"`), then exit. */
@@ -164,15 +184,24 @@ export class TerminalUI {
     return {
       accent,
       info: `${accent(color.bold(plan ? 'Plan' : 'Build'))}  ${this.agent.model}${gray(this.thinkingLabel())}`,
-      footerLeft: gray(this.#folderLabel()),
-      footerRight: `${color.bold('shift+tab')} ${gray('mode')}   ${color.bold('ctrl+p')} ${gray('commands')}`,
+      footerLeft: (max) => gray(shortenPath(this.#folderLabel(), max)),
+      footerRight: [
+        `${color.bold('shift+tab')} ${gray('mode')}   ${color.bold('ctrl+p')} ${gray('menu')}   ${color.bold('/')} ${gray('commands')}   ${color.bold('↑↓')} ${gray('history')}`,
+        `${color.bold('shift+tab')} ${gray('mode')}   ${color.bold('ctrl+p')} ${gray('menu')}   ${color.bold('/')} ${gray('commands')}`,
+        `${color.bold('shift+tab')} ${gray('mode')}   ${color.bold('/')} ${gray('commands')}`,
+        `${color.bold('/')} ${gray('commands')}`,
+      ],
     };
   }
 
   #commandList() {
-    return Object.entries(COMMANDS)
+    const builtin = Object.entries(COMMANDS)
       .filter(([, c]) => !c.hidden)
       .map(([name, c]) => ({ name, usage: c.usage, description: c.description, takesArg: /[[<]/.test(c.usage) }));
+    const custom = listCustomCommands(this.agent.guard.root)
+      .filter((c) => !COMMANDS[c.name])
+      .map((c) => ({ name: c.name, usage: `/${c.name} [text]`, description: c.description, takesArg: true }));
+    return [...builtin, ...custom];
   }
 
   /** Start screen: big logo, centred prompt box. Returns the first input (or null). */
@@ -183,14 +212,17 @@ export class TerminalUI {
     const { lines, width } = logoLines(cols);
     stdout.write('\n'.repeat(Math.max(1, Math.floor((rows - 18) / 2))));
     for (const l of lines) stdout.write(`${centre(l, width, cols)}\n`);
-    const sub = `v${this.version}  ${sym.sep}  ${this.agent.model}`;
-    stdout.write(`\n${centre(orange('/help') + gray(` commands  ${sym.sep}  ${sub}`), 5 + 11 + stringWidth(sub), cols)}\n\n`);
+    const mode = this.agent.mode === 'plan' ? 'plan' : 'build';
+    const providerName = this.settings.provider || this.provider?.name || 'connected';
+    const panel = homePanel({ cols, version: this.version, model: this.agent.model, provider: providerName, mode, folder: this.#folderLabel() });
+    stdout.write(`\n${panel}\n\n`);
     const maxWidth = Math.min(76, cols - 5);
     return this.input.prompt({
       state: () => this.#promptState(),
       commands: this.#commandList(),
       margin: Math.max(2, Math.floor((cols - maxWidth) / 2)),
       maxWidth,
+      placeholder: 'What should we build today?  ( / for commands )',
       echo: false,
     });
   }
@@ -234,7 +266,10 @@ export class TerminalUI {
       line = line.trim();
       if (!line) continue;
       if (line.startsWith('/')) {
-        await runCommand(this, line === '/' ? '/help' : line);
+        const name = line.slice(1).split(/\s/)[0].toLowerCase();
+        const custom = line === '/' || COMMANDS[name] ? null : expandCustomCommand(this.agent.guard.root, line);
+        if (custom) await this.#runTask(custom);
+        else await runCommand(this, line === '/' ? '/menu' : line);
       } else {
         await this.#runTask(line);
       }
@@ -259,19 +294,29 @@ export class TerminalUI {
    */
   async confirm(description, action) {
     return this.#paused(async () => {
-      const lines = String(description).split('\n').map((l) => l.trimEnd());
+      const [what, risk] = ACTION_TITLE[action] ?? ['Approval needed', 'warn'];
+      const paint = risk === 'danger' ? color.red : risk === 'info' ? violet : orange;
       const scope = ACTION_LABEL[action];
-      stdout.write(`\n${card('Permission needed', lines, '', orange)}\n`);
+      const plan = this.agent.mode === 'plan';
+      const access = this.agent.permissions.accessLevel;
+      const tool = this.currentTool?.name;
+      const context = [
+        `${color.bold(plan ? 'PLAN' : 'BUILD')} mode`,
+        `access: ${access}`,
+        tool ? `tool: ${tool}${this.step ? ` (step ${this.step})` : ''}` : null,
+      ].filter(Boolean).join(`  ${sym.sep}  `);
+      const lines = [gray(context), '', ...String(description).split('\n').map((l) => l.trimEnd())];
       const choice = await this.input.choose(
-        'Permission',
+        `${what}`,
         [
-          { key: 'o', aliases: ['y', '1'], label: 'Allow once', value: 'once' },
-          { key: 'a', aliases: ['2'], label: scope ? `Always (${scope}, this session)` : 'Always (this session)', value: 'always' },
-          { key: 'n', aliases: ['r', '3'], label: 'Reject', value: false },
+          { key: 'o', aliases: ['y', '1'], label: 'Allow once (only this)', value: 'once' },
+          { key: 'a', aliases: ['2'], label: scope ? `Always: ${scope} (this session)` : 'Always: this kind (this session)', value: 'always' },
+          { key: 'n', aliases: ['r', '3'], label: 'Reject (agent tries another way)', value: false },
         ],
-        { signal: this.abort?.signal },
+        { signal: this.abort?.signal, lines, accent: paint, hint: 'o once · a always · n reject · ↑/↓ move · Enter confirm · Esc reject' },
       );
-      stdout.write(`  ${choice ? color.green(sym.ok) : color.red(sym.fail)} ${gray(choice === 'always' ? 'allowed for this session' : choice ? 'allowed once' : 'rejected')}\n`);
+      const verdict = choice === 'always' ? `always allowed for this session: ${scope ?? what}  ${sym.sep}  /permissions reset to undo` : choice ? `allowed once: ${what}` : `rejected: ${what}`;
+      stdout.write(`  ${choice ? color.green(sym.ok) : color.red(sym.fail)} ${gray(verdict)}\n`);
       return choice;
     });
   }
@@ -314,6 +359,14 @@ export class TerminalUI {
     }
   }
 
+  /** Compact toast-style notification used for important lifecycle feedback. */
+  notify(title, message, kind = 'info') {
+    const paint = kind === 'error' ? color.red : kind === 'success' ? color.green : kind === 'warning' ? orange : violet;
+    const icon = kind === 'error' ? sym.fail : kind === 'success' ? sym.ok : kind === 'warning' ? sym.warn : sym.ai;
+    const body = String(message ?? '').split('\n').map((line) => `  ${oneLine(line, 110)}`);
+    stdout.write(`\n${card(`${icon} ${title}`, body, 'Puter Agent', paint)}\n`);
+  }
+
   printTodos(todos = []) {
     const mark = { completed: color.green(sym.ok), in_progress: orange('◐'), pending: gray('○') };
     for (const t of todos) {
@@ -334,6 +387,7 @@ export class TerminalUI {
   #render(event) {
     switch (event.type) {
       case 'thinking':
+        this.step = event.step;
         this.spinner.start(event.step > 1 ? 'Thinking about the result' : 'Thinking');
         this.spinner.update(event.step > 1 ? 'Thinking about the result' : 'Thinking');
         break;
@@ -354,6 +408,7 @@ export class TerminalUI {
       case 'tool_call': {
         this.spinner.stop();
         const paint = TOOL_COLOR[event.name] ?? gray;
+        this.currentTool = { name: event.name, args: summarizeArgs(event.args) };
         console.log(`  ${paint(sym.dot)} ${color.bold(event.name)} ${gray(summarizeArgs(event.args))}`);
         this.toolStartedAt = Date.now();
         this.spinner.start(workingLabel(event.name, event.args));
@@ -401,7 +456,7 @@ export class TerminalUI {
     }
   }
 
-  #renderResult({ content, stopReason, steps, changes }, elapsedMs) {
+  #renderResult({ content, stopReason, steps, changes, usage }, elapsedMs) {
     if (stopReason === 'aborted') {
       console.log(color.yellow('\nCancelled. Type "continue" to resume, or give a new instruction.\n'));
     } else if (stopReason === 'max_steps') {
@@ -409,13 +464,18 @@ export class TerminalUI {
         color.yellow(`\nStopped after ${steps} steps (limit: maxSteps in config/settings.json). Type "continue" to let the agent keep going.\n`),
       );
     } else if (stopReason === 'stuck') {
-      console.log(color.red('\nStopped: the same tool call failed 3 times in a row. Give the agent a hint or a different instruction.\n'));
+      this.notify('Agent paused', 'The same tool call failed 3 times. Give the agent a hint or a different instruction.', 'error');
     } else {
       const rendered = renderMarkdownToTerminal(content.trim() || '(no text reply)');
       const th = this.theme;
       const assistantPaint = typeof th.assistant === 'function' ? th.assistant : (s) => th.assistant ? th.assistant(s) : violet(sym.ai);
       console.log(`\n${assistantPaint(sym.ai)} ${rendered}\n`);
-      console.log(gray(`  ${sym.ok} done ${sym.sep} ${steps} step(s) ${sym.sep} ${fmtTime(elapsedMs)}\n`));
+      console.log(gray(`  ${sym.ok} completed ${sym.sep} ${steps} step(s) ${sym.sep} ${fmtTime(elapsedMs)}`));
+      if (usage?.modelCalls) {
+        const tokens = Number(usage.totalTokens) || 0;
+        const cached = Number(usage.cachedTokens) || 0;
+        console.log(gray(`  usage: ${tokens.toLocaleString()} tokens (${cached.toLocaleString()} cached) ${sym.sep} ${usage.modelCalls} model call(s) ${sym.sep} ${usage.toolCalls} tool call(s)\n`));
+      } else console.log('');
     }
 
     if (changes?.length) {
@@ -432,6 +492,6 @@ export class TerminalUI {
       console.log(color.yellow('\nCancelled.\n'));
       return;
     }
-    console.log(color.red(`\n${sym.fail} ${explainError(err)}\n`));
+    this.notify('Something went wrong', explainError(err), 'error');
   }
 }

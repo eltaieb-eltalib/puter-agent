@@ -28,7 +28,7 @@
   },
   "limits": {
     "maxReadBytes": 200000,
-    "maxToolResultChars": 20000,
+    "maxToolResultChars": 10000,
     "commandTimeoutMs": 60000,
     "maxCommandOutputChars": 20000
   },
@@ -39,9 +39,34 @@
     "deleteFile": true,
     "moveFile": true,
     "createDirectory": false,
-    "runCommand": true
+    "runCommand": true,
+    "openPath": true
+  },
+  "optimization": {
+    "dynamicTools": true,
+    "keepRecentToolResults": 4,
+    "compressedToolResultChars": 1200
   },
   "security": {
     "outsideWorkspace": "ask"
-  }
+  },
+  "rules": {
+    "allowCommands": [
+      "git status*",
+      "git diff*",
+      "git log*",
+      "git branch*",
+      "npm test*",
+      "npm run test*",
+      "node --check *"
+    ],
+    "denyCommands": [
+      "git push*",
+      "git reset --hard*",
+      "git clean*",
+      "npm publish*"
+    ]
+  },
+  "hooks": {},
+  "mcpServers": {}
 }

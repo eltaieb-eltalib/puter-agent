@@ -28,3 +28,23 @@ export function loadEnvFile(file) {
   }
   return true;
 }
+
+/**
+ * Save KEY=value into the .env file (replace the existing line or append) and into process.env.
+ * The file is created readable only by you (mode 600) when it does not exist yet.
+ */
+export function saveEnvValue(file, key, value) {
+  if (!/^[A-Z][A-Z0-9_]*$/.test(key)) throw new Error('Invalid variable name.');
+  if (/[\r\n]/.test(value)) throw new Error('The value must be a single line.');
+  let text = '';
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch {
+    /* new file */
+  }
+  const line = `${key}=${value}`;
+  const re = new RegExp(`^\\s*${key}\\s*=.*$`, 'm');
+  const next = re.test(text) ? text.replace(re, () => line) : `${text}${text && !text.endsWith('\n') ? '\n' : ''}${line}\n`;
+  fs.writeFileSync(file, next, { encoding: 'utf8', mode: 0o600 });
+  process.env[key] = value;
+}

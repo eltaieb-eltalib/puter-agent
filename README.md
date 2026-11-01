@@ -1,12 +1,13 @@
 # Puter Agent v0.2
 
-وكيل ذكاء اصطناعي في الطرفية على طريقة **opencode**، مبني بـ **Node.js**، ويدعم Puter.js وGoogle Gemini وOpenAI API عبر SDK الرسمي. يقرأ ويبحث وينشئ ويعدّل ويشغّل الملفات داخل مجلد عمل، **ويبحث في الإنترنت** ويقرأ الصفحات.
+وكيل ذكاء اصطناعي في الطرفية على طريقة **opencode**، مبني بـ **Node.js**، ويدعم Puter.js وGoogle Gemini وOpenAI API وAgentRouter عبر Responses API. يقرأ ويبحث وينشئ ويعدّل ويشغّل الملفات داخل مجلد عمل، **ويبحث في الإنترنت** ويقرأ الصفحات.
 
 ## الجديد في v0.2
 
 | الميزة | الوصف |
 |---|---|
 | OpenAI API | SDK الرسمي مع Responses API، اكتشاف النماذج من الحساب، Function Calling بصيغة Responses، ومستويات reasoning قابلة للضبط حسب النموذج |
+| AgentRouter | اتصال مباشر بـ `https://agentrouter.org/v1/responses`، نماذج GPT الثلاثة المحددة، Bearer API Key، وFunction Calling عبر Responses API |
 | Gemini API | دعم Gemini مع مستويات thinking الخاصة به |
 | `web_search` | بحث في الإنترنت: SearXNG (خادمك أو عام) ← DuckDuckGo ← ويكيبيديا، تلقائياً بالترتيب |
 | `web_fetch` | تنزيل صفحة وتحويلها لنص مقروء (يدعم العربية والتقسيم لصفحات) |
@@ -54,12 +55,16 @@ node index.js
 
 خيارات: `-w <مجلد>` مجلد العمل، `-m <نموذج>`، `--mode plan|build`، `-p "نص"`.
 
-**المصادقة:** اختر المزود من `.env` عبر `AGENT_PROVIDER=puter|gemini|openai`.
-- OpenAI: ضع `OPENAI_API_KEY`، ثم `AGENT_PROVIDER=openai`.
-- Gemini: ضع `GEMINI_API_KEY`، ثم `AGENT_PROVIDER=gemini`.
-- Puter: ضع `PUTER_AUTH_TOKEN` أو سجل الدخول بالمتصفح.
+**المصادقة:** اختر المزود من `.env` أو استخدم `/connect` داخل التطبيق.
+- Puter: `PUTER_AUTH_TOKEN` أو تسجيل الدخول بالمتصفح.
+- Gemini: `GEMINI_API_KEY` (تكامل Google الأصلي).
+- OpenAI: `OPENAI_API_KEY` (Responses API).
+- AgentRouter: `AGENTROUTER_API_KEY` (Responses API).
+- Anthropic: `ANTHROPIC_API_KEY` (Messages API الأصلي).
+- المزودون المتوافقون مع OpenAI Chat Completions: AnyAPI, DeepSeek, OpenRouter, Groq, Mistral, xAI, Cerebras, Together AI, Fireworks, NVIDIA NIM, Perplexity, Z.AI, Moonshot, Qwen. ضع مفتاح المزود المطابق في `.env`.
+- محلياً: Ollama وLM Studio يستخدمان عناوين localhost الافتراضية؛ لا يحتاجان مفتاحاً عادةً.
 
-OpenAI يستخدم Responses API، ويحافظ على عناصر استجابة النموذج كاملة بين استدعاءات الأدوات حتى لا تضيع عناصر reasoning المطلوبة لاستكمال الدورة.
+التكامل المتوافق يستخدم Chat Completions مع دعم function calling، ويحاول جلب النماذج من `/models` ثم يرجع إلى قائمة افتراضية إذا لم يوفر المزود endpoint للنماذج.
 
 **البحث:** يعمل مباشرة بلا إعداد. للحصول على أفضل نتائج شغّل SearXNG خاصاً بك (Docker) وضع `SEARXNG_URL=http://localhost:8080` في `.env`. خوادم SearXNG العامة كثيراً ما تعطّل صيغة JSON أو تتوقف، ولذلك يوجد بديل DuckDuckGo ثم ويكيبيديا. القائمة والترتيب في `config/settings.json` تحت `search`.
 
@@ -76,7 +81,7 @@ OpenAI يستخدم Responses API، ويحافظ على عناصر استجاب�
 | `/init` | يدرس المشروع وينشئ `AGENTS.md` |
 | `/resume` | استرجاع آخر محادثة |
 | `/model [نص]` ، `/models` | عرض/تغيير النموذج من المزود الحالي |
-| `/connect [puter|gemini|openai] [model]` | تغيير المزود والنموذج |
+| `/connect [provider] [model]` | تغيير المزود والنموذج؛ اكتب `/connect` لعرض القائمة والأمثلة |
 | `/thinking [level]` | ضبط thinking/reasoning effort حسب المزود والنموذج |
 | `/reasoning-mode [standard|pro]` | وضع reasoning في نماذج OpenAI المدعومة |
 | `/workspace [مجلد]` | تغيير مجلد العمل |
@@ -95,7 +100,7 @@ OpenAI يستخدم Responses API، ويحافظ على عناصر استجاب�
 
 ## توثيق v0.1 (ما زال صالحاً)
 
-وكيل ذكاء اصطناعي خفيف يعمل في CMD / PowerShell، مبني بـ **Node.js**، ويدعم Puter.js وGoogle Gemini وOpenAI API عبر SDK الرسمي. لا يكتفي بعرض الأكواد: يضع خطة، وينشئ الملفات ويعدّلها داخل مجلد عمل محدد، ويشغّل الكود للتحقق منه، ويصلح الأخطاء، ثم يعرض ملخصاً بما أنجزه.
+وكيل ذكاء اصطناعي خفيف يعمل في CMD / PowerShell، مبني بـ **Node.js**، ويدعم Puter.js وGoogle Gemini وOpenAI API وAgentRouter عبر Responses API. لا يكتفي بعرض الأكواد: يضع خطة، وينشئ الملفات ويعدّلها داخل مجلد عمل محدد، ويشغّل الكود للتحقق منه، ويصلح الأخطاء، ثم يعرض ملخصاً بما أنجزه.
 
 > **الحالة (v0.1):** المراحل 1 و2 و3 من المواصفات منفّذة: النواة وواجهة CMD، الأدوات المحلية، وحلقة الوكيل مع Function Calling. المراحل 4–7 (اختبار مشاريع أكبر، الذاكرة الدائمة، التخطيط المحفوظ، Skills وMCP) لم تُنفّذ بعد. انظر «ما تم التحقق منه» أدناه.
 
@@ -176,13 +181,115 @@ workspace/          مجلد العمل الافتراضي
 | الحماية | التفاصيل |
 |---|---|
 | مجلد عمل محدد | كل المسارات تُحسب بالنسبة له. يُمنع `..` والمسارات المطلقة الخارجية، وكذلك الهروب عبر الروابط الرمزية (symlinks). |
-| خارج مجلد العمل | يسأل البرنامج عن كل وصول. أو غيّر `security.outsideWorkspace` إلى `"deny"` للمنع التام. |
+| خارج مجلد العمل | `security.outsideWorkspace`: `"ask"` (يسأل، الافتراضي) أو `"deny"` (منع تام) أو `"allow"` (وصول لأي مجلد في النظام بدون سؤال). |
 | موافقة قبل | الحذف، الكتابة فوق ملف موجود، النقل، وتشغيل أي أمر. تُعدَّل من `approvals` في `config/settings.json`. |
 | لا حذف جماعي | `delete_file` يحذف ملفاً واحداً فقط. والنقل لا يكتب فوق وجهة موجودة. |
 | الأوامر | يُعرض الأمر كاملاً قبل التنفيذ. أنماط كارثية (`format C:` و`shutdown` و`rm -rf /` و`curl ... \| sh`...) تُرفض قبل السؤال أصلاً. |
 | الرمز السري | لا يصل للأوامر المنفذة، ويُحجب من رسائل الأخطاء. |
 
 **تنبيه:** هذه حماية على مستوى التطبيق وليست عزلاً (sandbox). الأمر الذي توافق عليه يعمل بصلاحياتك الكاملة، فاقرأ كل أمر قبل أن تضغط `y`.
+
+## ميزات على طريقة opencode
+
+| الميزة | الاستعمال |
+|---|---|
+| `glob` | البحث عن ملفات بالاسم: `**/*.js` و`src/**/*.{ts,tsx}` |
+| `multi_edit` | عدة تعديلات على ملف واحد في استدعاء واحد (كلها تنجح أو لا يُكتب شيء) |
+| `task` | وكيل فرعي للقراءة والبحث فقط بسياق نظيف، يرجع تقريراً للوكيل الرئيسي |
+| `@ملف` | اكتب `@src/app.js اشرح هذا` فيُرفق محتوى الملف (أو قائمة المجلد) بالرسالة. الملفات السرية وخارج مجلد العمل لا تُرفق |
+| أوامر مخصصة | ضع `.puter-agent/commands/review.md` في مجلد العمل فيصبح `/review`. السطر الأول `# وصف` يظهر في `/help`، و`$ARGUMENTS` يُستبدل بما بعد الأمر |
+| `/compact` | تلخيص المحادثة الآن لتوفير السياق |
+| `/export` | حفظ المحادثة كملف Markdown في `.puter-agent/exports` |
+
+## الواجهة (TUI)
+
+كل الصفحات والخيارات صارت واجهة طرفية تفاعلية بدل الأسئلة النصية:
+
+| الصفحة | كيف تفتحها |
+|---|---|
+| **القائمة الرئيسية** (كل الصفحات والإعدادات وقيمها الحالية) | `Ctrl+P` أو `/menu` أو `/` وحدها |
+| قائمة النماذج (بحث فوري، وإدخال id يدوي) | `/model` |
+| قائمة المزوّدين مع حالة المفتاح، ثم النموذج | `/connect` |
+| إدخال مفتاح API **مخفي** (يُحفظ في `.env` بصلاحية خاصة بك) | يظهر تلقائياً عند اختيار مزوّد بلا مفتاح |
+| مستوى الوصول مع نافذة تأكيد حمراء للوصول الكامل | `/access` |
+| الطور (BUILD/PLAN) ومستوى التفكير ووضع الاستدلال | `/mode` و`/thinking` و`/reasoning-mode` |
+| الرجوع لمهمة سابقة مع تأكيد | `/rewind` |
+| الذاكرة: عرض/إضافة/نسيان/مسح | `/memory` |
+| صفحات قابلة للتمرير: المساعدة والأدوات والتغييرات (git) ونتائج البحث | `/help` `/tools` `/diff` `/search` |
+| لوحات: السياق (مع مقياس) وMCP وHooks والأذونات | `/context` `/mcp` `/hooks` `/permissions` |
+
+مفاتيح القوائم: اكتب للتصفية، `↑/↓` للتنقل، `PgUp/PgDn` للقفز، `Enter` للاختيار، `Esc` للرجوع. في الصفحات: `q` للإغلاق و`g/G` للبداية والنهاية. في حقل المفتاح: `Ctrl+R` لإظهار/إخفاء ما كتبت.
+
+إذا لم تكن الطرفية تفاعلية (أنبوب أو CI أو اختبارات) تعود كل الصفحات تلقائياً إلى نص عادي بأرقام وأسئلة، فلا ينكسر شيء.
+
+## ميزات على طريقة Claude Code
+
+### قواعد الأوامر (تقليل الأسئلة دون فقدان الأمان)
+في `config/settings.json`:
+```json
+"rules": {
+  "allowCommands": ["git status*", "git diff*", "npm test*"],
+  "denyCommands": ["git push*", "git reset --hard*", "npm publish*"]
+}
+```
+`*` تعني أي نص. أوامر `allow` تُنفَّذ بدون سؤال، لكن فقط إذا كانت بسيطة: أي أمر فيه `;` أو `&` أو `|` أو `>` أو `<` أو `` ` `` أو `$(` يسأل دائماً. وقواعد `deny` تُفحص على كل جزء من الأمر المركب وتُرفض دائماً. شاهد القواعد الفعالة بالأمر `/hooks`.
+
+### Hooks
+أوامر تعمل تلقائياً حول استدعاءات الأدوات. تُقرأ **من `config/settings.json` فقط** (وليس من مجلد العمل) حتى لا يستطيع مشروع منزَّل تثبيت أوامر تعمل على جهازك.
+```json
+"hooks": {
+  "PreToolUse":  [{ "matcher": "run_command|delete_file", "command": "node scripts/check.js" }],
+  "PostToolUse": [{ "matcher": "edit_file|multi_edit|create_file", "command": "npx prettier --write ." }]
+}
+```
+- `matcher`: تعبير نمطي على اسم الأداة (`*` أو فارغ = كل الأدوات).
+- يستلم الأمر حدثاً بصيغة JSON على stdin (`event` و`tool` و`args`) ومتغيري البيئة `PUTER_HOOK_EVENT` و`PUTER_HOOK_TOOL`، ويعمل داخل مجلد العمل.
+- `PreToolUse`: الخروج برمز `0` يسمح، وأي رمز آخر (أو تعذر التشغيل أو انتهاء 30 ثانية) **يمنع** الأداة ويصل النص للنموذج.
+- `PostToolUse`: ما يطبعه الأمر يصل للنموذج بجانب نتيجة الأداة.
+
+### MCP
+```json
+"mcpServers": {
+  "filesystem": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "D:/Projects"] },
+  "docs": { "command": "node", "args": ["my-server.js"], "env": { "TOKEN": "..." }, "trust": true }
+}
+```
+تُضاف أدوات كل خادم باسم `mcp__<الخادم>__<الأداة>` وتسأل عن الإذن قبل كل استدعاء، إلا إذا وضعت `"trust": true` للخادم. خادم يفشل تشغيله يُتجاوز مع رسالة. `/mcp` يعرض الحالة. (النقل المدعوم: stdio.)
+
+### وكلاء فرعيون مخصصون ومتوازيون
+ملف `.puter-agent/agents/security.md` في مجلد العمل (السطر الأول `# متى يُستعمل`) يصبح وكيلاً فرعياً يُستدعى بـ `task` مع `agent: "security"`. الوكلاء الفرعيون للقراءة والبحث فقط دائماً. إذا طلب النموذج عدة `task` في خطوة واحدة فإنها تعمل **بالتوازي**.
+
+### مراجعة وسياق واستعادة
+| الأمر | الوظيفة |
+|---|---|
+| معاينة الفروقات | نافذة الإذن لتعديل ملف أو الكتابة فوقه تعرض الأسطر المحذوفة `-` والمضافة `+` |
+| `/context` | حجم المحادثة ونسبة الامتلاء قبل الضغط التلقائي، وعدد الرموز المستهلكة في الجلسة |
+| `/diff` | حالة git والأسطر المتغيرة |
+| `/rewind` | يعرض المهام التي غيّرت ملفات، ويرجع المجلد لما قبل مهمة تختارها |
+
+### التشغيل غير التفاعلي
+```
+node index.js -p "شغل الاختبارات وأصلح الفاشل" --access full --output-format json
+```
+يطبع سطر JSON واحداً: `result` و`stop_reason` و`steps` و`usage` و`changes` و`is_error`، ورمز الخروج `0` عند النجاح. بدون `--access full` تُرفض أي عملية تحتاج موافقة لأنه لا يوجد من يسأل.
+
+## نافذة الإذن والاختصارات
+
+نافذة الإذن صندوق واحد يوضح: نوع الإجراء (تشغيل أمر، حذف، خارج مجلد العمل...) ولونه حسب الخطورة (أحمر للحذف والخارج والملفات السرية)، والطور (BUILD/PLAN)، ومستوى الوصول، والأداة وخطوتها، ثم الأمر أو المسار كاملاً (يلتف على عدة أسطر بدل أن يتشوه). الخيارات: `o` مرة واحدة، `a` دائماً لهذا النوع حتى الخروج (`/permissions reset` للتراجع)، `n` رفض. اختصارات التذييل تقصر تلقائياً حسب عرض الطرفية، ومسار المجلد يُقص من البداية ليبقى اسم المجلد ظاهراً.
+
+## الوصول الكامل للنظام
+
+الوكيل ينفذ الأوامر (`run_command`) والأكواد (`run_node` و`run_python`) ويفتح الملفات والمجلدات والروابط بالتطبيق الافتراضي (`open_path`) ويعرف أماكن الأقراص (`list_drives`). تحكّم بمستوى الوصول أثناء التشغيل بالأمر:
+
+| الأمر | المعنى |
+|---|---|
+| `/access workspace` | مجلد العمل فقط، والأوامر تسأل |
+| `/access ask` | الخارج يسأل أولاً (الافتراضي) |
+| `/access full` | أي مجلد في النظام، والأوامر والأكواد والفتح بدون سؤال (يطلب تأكيد `yes`) |
+
+للتفعيل الدائم من `config/settings.json`: `"security": { "outsideWorkspace": "allow" }` و`"approvals": { "runCommand": false, "openPath": false }`.
+
+حتى في الوصول الكامل: الحذف والكتابة فوق ملف والنقل وقراءة الملفات السرية تسأل دائماً، والأنماط الكارثية (`format` و`shutdown` و`rm -rf /`...) تُرفض دائماً. لجعل كل شيء تلقائياً ضع `false` أمام هذه الإجراءات في `approvals`.
 
 ## الإعدادات (`config/settings.json`)
 
@@ -226,9 +333,9 @@ Agent > add a square-root button to the calculator
 
 المرحلة 4: اختبار مشاريع حقيقية أكبر. 5: تقوية الأمان والاستقرار. 6: ذاكرة دائمة (محادثات، سياق المشروع، تفضيلات) وتخطيط مع حفظ الحالة لاستكمال المهام المتوقفة. 7: نظام Skills (الحقل `skill` جاهز في `core/context.js`) ودعم MCP وأدوات إضافية.
 
-## Providers (Puter / Gemini)
+## Providers
 
-- `AGENT_PROVIDER=gemini` in `.env` (or `/connect gemini` inside the app) switches to Google Gemini; it needs `GEMINI_API_KEY`.
+- Use `/connect <provider> [model]` to switch providers. The provider list is generated from the adapters registered in `providers/provider-manager.js`.
 - Gemini uses real function calling, so all tools work (Gemini 3 "thought signatures" are handled). `/connect gemini gemini-3.8-flash` picks the model, `/model` lists what Google currently offers (Google retires old ids, e.g. gemini-2.5-flash); the choice is saved in `config/connect.json`.
 - Gemini 3+ "thinks" before answering, which made even `hi` take ~40 s at Google's default (`medium`). The agent sends `thinkingLevel: low` by default. Change it with `GEMINI_THINKING_LEVEL` in `.env` or `"gemini": { "thinkingLevel": "medium" }` in `config/settings.json` (low | medium | high | off). `minimal` is rejected by 3.7/3.8 Flash; if a model refuses the level, the agent drops it and retries automatically.
 - Inside the app: `/thinking` shows a menu (low / medium / high / off), or `/thinking high` sets it directly. It applies from the next message, is shown on the status line (`gemini-3.8-flash (thinking: high)`), and is saved in `config/connect.json`.
@@ -242,3 +349,16 @@ For clear "search the web" requests (`ابحث لي عن ...`, `search for ...`,
 
 `web_fetch` refuses localhost, LAN, link-local and cloud-metadata addresses, and checks every redirect hop. Set `"search": { "allowPrivateFetch": true }` only if you really need it. (Your own SearXNG on localhost still works: that is configured by you, not by the model.)
 
+
+## Token optimization
+
+Dynamic tool selection, progressive compression of older tool outputs, configurable context limits, and per-task token usage reporting are enabled by default. Configure them in `config/settings.json`.
+
+
+## Terminal experience
+
+Puter Agent keeps its own pixel wordmark, violet assistant accent, teal Build mode,
+and orange Plan mode. Its terminal interactions use focused, framed selection
+panels for approvals and choices, a compact prompt footer, keyboard command
+palette, and consistent lifecycle notifications. The visual language is inspired
+by modern coding-agent workflows while retaining Puter Agent branding.

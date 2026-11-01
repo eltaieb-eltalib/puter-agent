@@ -24,7 +24,7 @@ export const DEFAULTS = Object.freeze({
   retry: { retries: 3, baseDelayMs: 1000, maxDelayMs: 15000 },
   limits: {
     maxReadBytes: 200000,
-    maxToolResultChars: 20000,
+    maxToolResultChars: 10000,
     commandTimeoutMs: 60000,
     commandIdleMs: 30000,
     maxCommandOutputChars: 20000,
@@ -37,8 +37,16 @@ export const DEFAULTS = Object.freeze({
     moveFile: true,
     createDirectory: false,
     runCommand: true,
+    openPath: true,
   },
   security: { outsideWorkspace: 'ask' },
+  // Command rules for run_command (patterns use * as a wildcard). allow = no approval prompt (only for simple
+  // commands without ; & | > < ` $( ), deny = always refused.
+  rules: { allowCommands: [], denyCommands: [] },
+  // Hooks and MCP servers are read from config/settings.json only (see README).
+  hooks: {},
+  mcpServers: {},
+  optimization: { dynamicTools: true, keepRecentToolResults: 4, compressedToolResultChars: 1200 },
   // verify: after changing code the agent must run something before it may finish (max `nudges` reminders).
   verify: { enabled: true, nudges: 2 },
   // compactAtChars: summarise old conversation parts when the history grows past this size.
@@ -67,6 +75,8 @@ export function parseArgs(argv) {
     else if (flag === '--model' || flag === '-m') cli.model = next();
     else if (flag === '--mode') cli.mode = next();
     else if (flag === '--prompt' || flag === '-p') cli.prompt = next();
+    else if (flag === '--output-format') cli.outputFormat = next();
+    else if (flag === '--access') cli.access = next();
     else if (flag === '--help' || flag === '-h') cli.help = true;
     else throw new Error(`Unknown argument: ${arg} (try --help)`);
   }
@@ -101,6 +111,8 @@ export function loadSettings({ rootDir, argv = [] }) {
     settings.workspace = path.resolve(process.cwd(), process.env.PUTER_AGENT_WORKSPACE);
   } else settings.workspace = path.resolve(rootDir, settings.workspace);
 
+  if (cli.outputFormat && !['text', 'json'].includes(cli.outputFormat)) throw new Error('--output-format must be "text" or "json".');
+  if (cli.access && !['workspace', 'ask', 'full'].includes(cli.access)) throw new Error('--access must be workspace, ask or full.');
   if (!Number.isInteger(settings.maxSteps) || settings.maxSteps < 1) {
     throw new Error('settings.maxSteps must be a positive integer.');
   }

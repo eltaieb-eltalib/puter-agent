@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { ToolError } from '../utils/errors.js';
 import { isSensitivePath } from '../utils/redact.js';
-import { display, recordChange, requireApproval, resolvePath } from './helpers.js';
+import { display, miniDiff, recordChange, requireApproval, resolvePath } from './helpers.js';
 
 const IGNORED_DIRS = new Set(['node_modules', '.git', '.hg', '.svn']);
 const MAX_SEARCH_FILE_BYTES = 1_000_000;
@@ -106,7 +106,16 @@ const createFileTool = {
         `"${display(ctx, abs)}" already exists. Use edit_file to modify it, or pass overwrite=true for a full rewrite.`,
       );
     }
-    if (already) await requireApproval(ctx, 'overwriteFile', `Overwrite existing file: ${display(ctx, abs)}`);
+    if (already) {
+      let before = '';
+      try {
+        before = await fs.readFile(abs, 'utf8');
+      } catch {
+        /* unreadable: no preview */
+      }
+      const diff = before ? miniDiff(before, content) : '';
+      await requireApproval(ctx, 'overwriteFile', `Overwrite existing file: ${display(ctx, abs)}${diff ? `\n${diff}` : ''}`);
+    } 
     else await requireApproval(ctx, 'createFile', `Create file: ${display(ctx, abs)}`);
 
     await ctx.checkpoint?.protect(abs);
@@ -173,7 +182,7 @@ const editFileTool = {
     if (crlf) updated = updated.replace(/\n/g, '\r\n');
 
     const replacements = replace_all ? count : 1;
-    await requireApproval(ctx, 'editFile', `Edit file: ${display(ctx, abs)} (${replacements} replacement(s))`);
+    await requireApproval(ctx, 'editFile', `Edit file: ${display(ctx, abs)} (${replacements} replacement(s))\n${miniDiff(text, replace_all ? text.split(oldText).join(newText) : text.replace(oldText, () => newText))}`);
     await ctx.checkpoint?.protect(abs);
     await fs.writeFile(abs, updated, 'utf8');
     recordChange(ctx, 'edited', abs);
@@ -383,7 +392,142 @@ const searchFilesTool = {
   },
 };
 
+/** Glob -> RegExp: ** crosses folders, * and ? stay inside one, {a,b} alternatives. */
+export function globToRegExp(glob) {
+  let re = '';
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === '*') {
+      if (glob[i + 1] === '*') {
+        i++;
+        if (glob[i + 1] === '/') {
+          i++;
+          re += '(?:.*/)?';
+        } else re += '.*';
+      } else re += '[^/]*';
+    } else if (c === '?') re += '[^/]';
+    else if (c === '{') {
+      const end = glob.indexOf('}', i);
+      if (end === -1) re += '\\{';
+      else {
+        re += `(?:${glob.slice(i + 1, end).split(',').map((a) => a.replace(/[.+^$()|[\]\\]/g, '\\$&')).join('|')})`;
+        i = end;
+      }
+    } else re += c.replace(/[.+^$()|[\]\\}]/g, '\\$&');
+  }
+  return new RegExp(`^${re}$`, 'i');
+}
+
+const globTool = {
+  name: 'glob',
+  readOnly: true,
+  description:
+    'Find files by name pattern, e.g. "**/*.js", "src/**/*.{ts,tsx}", "*.md". A pattern without "/" matches the file name at any depth. Returns paths (newest first). node_modules and .git are skipped. Use search_files to search file CONTENTS.',
+  parameters: {
+    type: 'object',
+    properties: {
+      pattern: { type: 'string', description: 'Glob pattern.' },
+      path: { type: 'string', description: 'Directory to search in (relative to the workspace, or absolute). Default ".".' },
+      max_results: { type: 'integer', description: 'Maximum paths to return (default 200, max 1000).' },
+    },
+    required: ['pattern'],
+  },
+  async execute({ pattern, path: p = '.', max_results = 200 }, ctx) {
+    const abs = await resolvePath(ctx, p, 'search in');
+    const limit = Math.min(Math.max(1, max_results), 1000);
+    const re = globToRegExp(pattern.replace(/\\/g, '/'));
+    const byName = !pattern.includes('/');
+    const found = [];
+    let scanned = 0;
+    async function walk(dir, rel, depth) {
+      let items;
+      try {
+        items = await fs.readdir(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const item of items) {
+        if (scanned++ > 100000) return;
+        const r = rel ? `${rel}/${item.name}` : item.name;
+        if (item.isDirectory()) {
+          if (!IGNORED_DIRS.has(item.name) && depth < 12) await walk(path.join(dir, item.name), r, depth + 1);
+        } else if (re.test(byName ? item.name : r)) {
+          try {
+            found.push({ r, t: (await fs.stat(path.join(dir, item.name))).mtimeMs });
+          } catch {
+            found.push({ r, t: 0 });
+          }
+        }
+      }
+    }
+    await walk(abs, '', 0);
+    found.sort((a, b) => b.t - a.t);
+    const files = found.slice(0, limit).map((f) => f.r);
+    return { path: display(ctx, abs), files, truncated: found.length > limit, summary: `${files.length} file(s)${found.length > limit ? ' (truncated)' : ''}` };
+  },
+};
+
+const multiEditTool = {
+  name: 'multi_edit',
+  description:
+    'Apply SEVERAL exact-text edits to ONE file in a single call. Edits run in order (each sees the result of the previous one). All succeed or none is written. Prefer it over repeated edit_file calls on the same file. Read the file first.',
+  parameters: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'File path, relative to the workspace root.' },
+      edits: {
+        type: 'array',
+        description: 'List of { old_string, new_string, replace_all? }.',
+        items: {
+          type: 'object',
+          properties: {
+            old_string: { type: 'string', description: 'Exact text to replace (unique unless replace_all).' },
+            new_string: { type: 'string', description: 'Replacement text.' },
+            replace_all: { type: 'boolean', description: 'Replace every occurrence.' },
+          },
+          required: ['old_string', 'new_string'],
+        },
+      },
+    },
+    required: ['path', 'edits'],
+  },
+  async execute({ path: p, edits }, ctx) {
+    if (!edits.length) throw new ToolError('edits is empty.');
+    const abs = await resolvePath(ctx, p, 'edit a file at');
+    let original;
+    try {
+      original = await fs.readFile(abs, 'utf8');
+    } catch (err) {
+      if (err.code === 'ENOENT') throw new ToolError(`File not found: ${p}. Use create_file to create it.`);
+      throw err;
+    }
+    const crlf = original.includes('\r\n');
+    let text = crlf ? original.replace(/\r\n/g, '\n') : original;
+    let total = 0;
+    edits.forEach((e, i) => {
+      const n = i + 1;
+      if (typeof e?.old_string !== 'string' || typeof e?.new_string !== 'string') throw new ToolError(`Edit ${n}: old_string and new_string must be strings.`);
+      if (e.old_string === '') throw new ToolError(`Edit ${n}: old_string must not be empty.`);
+      const oldText = e.old_string.replace(/\r\n/g, '\n');
+      const newText = e.new_string.replace(/\r\n/g, '\n');
+      const count = text.split(oldText).length - 1;
+      if (count === 0) throw new ToolError(`Edit ${n}: old_string was not found (nothing was written). Re-read the file and copy the exact text.`);
+      if (count > 1 && !e.replace_all) throw new ToolError(`Edit ${n}: old_string matches ${count} places (nothing was written). Add context or set replace_all=true.`);
+      text = e.replace_all ? text.split(oldText).join(newText) : text.replace(oldText, () => newText);
+      total += e.replace_all ? count : 1;
+    });
+    if (crlf) text = text.replace(/\n/g, '\r\n');
+    await requireApproval(ctx, 'editFile', `Edit file: ${display(ctx, abs)} (${edits.length} edits, ${total} replacement(s))\n${miniDiff(original, text)}`);
+    await ctx.checkpoint?.protect(abs);
+    await fs.writeFile(abs, text, 'utf8');
+    recordChange(ctx, 'edited', abs);
+    return { path: display(ctx, abs), edits: edits.length, replacements: total, summary: `edited (${edits.length} edits)` };
+  },
+};
+
 export const filesystemTools = [
+  globTool,
+  multiEditTool,
   readFileTool,
   createFileTool,
   editFileTool,

@@ -40,3 +40,29 @@ export async function requireApproval(ctx, action, description) {
 export function recordChange(ctx, action, abs) {
   ctx.changes?.push({ action, path: display(ctx, abs) });
 }
+
+/**
+ * Small human-readable diff for approval prompts: trims the common start/end lines and shows what
+ * changes ("-" removed, "+" added). Not a full diff algorithm: good enough to review an edit.
+ */
+export function miniDiff(before, after, { maxLines = 14, maxWidth = 100 } = {}) {
+  const a = String(before ?? '').replace(/\r\n/g, '\n').split('\n');
+  const b = String(after ?? '').replace(/\r\n/g, '\n').split('\n');
+  let start = 0;
+  while (start < a.length && start < b.length && a[start] === b[start]) start++;
+  let endA = a.length;
+  let endB = b.length;
+  while (endA > start && endB > start && a[endA - 1] === b[endB - 1]) {
+    endA--;
+    endB--;
+  }
+  const cut = (l) => (l.length > maxWidth ? `${l.slice(0, maxWidth - 1)}…` : l);
+  const lines = [
+    ...a.slice(start, endA).map((l) => `- ${cut(l)}`),
+    ...b.slice(start, endB).map((l) => `+ ${cut(l)}`),
+  ];
+  if (!lines.length) return '';
+  const shown = lines.slice(0, maxLines);
+  const more = lines.length - shown.length;
+  return `    @@ line ${start + 1}\n${shown.map((l) => `    ${l}`).join('\n')}${more > 0 ? `\n    … ${more} more changed line(s)` : ''}`;
+}

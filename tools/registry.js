@@ -81,9 +81,11 @@ export class ToolRegistry {
   }
 
   /** Tool definitions in the OpenAI / Puter `tools` format. */
-  definitions({ readOnly = false } = {}) {
+  definitions({ readOnly = false, include = null } = {}) {
+    const allowed = include ? new Set(include) : null;
     return this.list()
       .filter((t) => !readOnly || t.readOnly)
+      .filter((t) => !allowed || allowed.has(t.name))
       .map((t) => ({
       type: 'function',
       function: { name: t.name, description: t.description, parameters: t.parameters },

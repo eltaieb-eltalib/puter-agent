@@ -19,7 +19,7 @@ async function rootWithConnect(connect) {
 describe('provider manager', () => {
   // This file once had a duplicate import and crashed on startup while every other test passed.
   test('the module loads and knows both providers', () => {
-    assert.deepEqual(PROVIDER_NAMES.sort(), ['gemini', 'openai', 'puter']);
+    assert.deepEqual(PROVIDER_NAMES.sort(), ['agentrouter','anthropic','anyapi','cerebras','deepseek','fireworks','gemini','groq','lmstudio','mistral','moonshot','nvidia','ollama','openai','openrouter','perplexity','puter','qwen','together','xai','zai'].sort());
   });
 
   test('the real entry point starts (--help exits 0)', () => {
@@ -32,6 +32,11 @@ describe('provider manager', () => {
     assert.throws(() => createProvider('nope'), /Unknown provider/);
     assert.throws(() => createProvider('gemini', { apiKey: '' }), /GEMINI_API_KEY/);
     assert.throws(() => createProvider('openai', { apiKey: '' }), /OPENAI_API_KEY/);
+    assert.throws(() => createProvider('agentrouter', { apiKey: '' }), /AGENTROUTER_API_KEY/);
+    assert.throws(() => createProvider('deepseek', { apiKey: '' }), /DEEPSEEK_API_KEY/);
+    assert.throws(() => createProvider('anthropic', { apiKey: '' }), /ANTHROPIC_API_KEY/);
+    assert.equal(createProvider('ollama').name, 'ollama');
+    assert.equal(createProvider('anyapi', { apiKey:'test-key-12345678' }).defaultModel, 'google/gemini-2.5-flash-lite');
   });
 
   test('resolveProvider: env > connect.json > puter, and picks the right model', async () => {
@@ -55,6 +60,12 @@ describe('provider manager', () => {
 
     r = resolveProvider({ rootDir: empty, env: { AGENT_PROVIDER: 'openai' }, settingsModel: 'some-other-model' });
     assert.deepEqual([r.name, r.model], ['openai', 'gpt-6.1-sol']);
+
+    r = resolveProvider({ rootDir: empty, env: { AGENT_PROVIDER: 'agentrouter' }, settingsModel: 'm' });
+    assert.deepEqual([r.name, r.model], ['agentrouter', 'gpt-6-astra']);
+
+    r = resolveProvider({ rootDir: empty, env: { AGENT_PROVIDER: 'deepseek' }, settingsModel: 'm' });
+    assert.deepEqual([r.name, r.model], ['deepseek', 'deepseek-chat']);
 
     r = resolveProvider({ rootDir: empty, env: { AGENT_PROVIDER: 'bogus' }, settingsModel: 'm' });
     assert.deepEqual([r.name, r.unknown], ['puter', 'bogus']);

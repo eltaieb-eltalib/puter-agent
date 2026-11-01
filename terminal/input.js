@@ -72,8 +72,38 @@ export function stringWidth(s) {
   return w;
 }
 
+/** Wrap plain text to `max` cells (breaks at spaces when possible). Coloured text is clipped instead. */
+export function wrapCells(text, max) {
+  const str = String(text);
+  if (stripAnsi(str) !== str) return [clip(str, max)];
+  const out = [];
+  let line = '';
+  let w = 0;
+  let lastSpace = -1;
+  for (const ch of str) {
+    const cw = charWidth(ch.codePointAt(0));
+    if (w + cw > max) {
+      if (lastSpace > 0) {
+        out.push(line.slice(0, lastSpace).trimEnd());
+        line = line.slice(lastSpace + 1);
+        w = stringWidth(line);
+      } else {
+        out.push(line);
+        line = '';
+        w = 0;
+      }
+      lastSpace = -1;
+    }
+    if (ch === ' ') lastSpace = line.length;
+    line += ch;
+    w += cw;
+  }
+  out.push(line);
+  return out;
+}
+
 /** Cut a (possibly coloured) string to `max` cells, adding "…". */
-function clip(s, max) {
+export function clip(s, max) {
   if (stringWidth(s) <= max) return s;
   let out = '';
   let w = 0;
@@ -165,6 +195,23 @@ class PlainInput {
     const answer = (await this.question(`${choices.map((c) => `[${c.key}] ${c.label}`).join('  ')} >`)).trim().toLowerCase();
     return choices.find((c) => c.key === answer || c.aliases?.includes(answer))?.value ?? choices[choices.length - 1].value;
   }
+  async widget(def) {
+    if (def.plainLines) {
+      console.log(def.plainLines.join('\n'));
+      return true;
+    }
+    // No TTY: degrade to a numbered list / plain question so scripts and pipes keep working.
+    if (def.plainItems) {
+      const text = def.plainItems.map((i, n) => `${n + 1}. ${i.label}`).join('\n');
+      const a = (await this.question(`${text}\nNumber >`)).trim();
+      return def.plainItems[Number(a) - 1]?.value ?? null;
+    }
+    if (def.plainPrompt) {
+      const a = (await this.question(`${def.plainPrompt} >`)).trim();
+      return a || null;
+    }
+    return def.cancelValue;
+  }
   close() {
     this.rl.close();
   }
@@ -186,7 +233,13 @@ export class InputBox {
     this.onExit = () => process.exit(0); // Ctrl+C twice / Ctrl+D / close()
     this.onToggleMode = null; // Shift+Tab
     this.handleData = (chunk) => this.#onData(chunk);
-    this.handleResize = () => this.session && this.#draw();
+    this.handleResize = () => {
+      const s = this.session;
+      if (!s) return;
+      if (s.kind === 'widget') this.#drawWidget();
+      else if (s.kind === 'choose') this.#drawChoose();
+      else this.#draw();
+    };
   }
 
   get cols() {
@@ -277,12 +330,52 @@ export class InputBox {
   }
 
   /** Inline choice row (←/→, Enter, or a hotkey). choices: [{key,label,value,aliases?}] */
-  choose(title, choices, { signal } = {}) {
+  choose(title, choices, { signal, lines = [], accent = null, hint = null } = {}) {
     this.attach();
     return new Promise((resolve) => {
-      this.session = { kind: 'choose', title, choices, idx: 0, resolve, signal };
+      this.session = { kind: 'choose', title, choices, idx: 0, resolve, signal, lines, accent, hint };
       this.#drawChoose();
     });
+  }
+
+  /**
+   * Run a TUI widget (see widgets.js): list, text field, pager, confirm. Resolves with the widget's value,
+   * or its cancelValue on Esc / Ctrl+C.
+   */
+  widget(def, { signal } = {}) {
+    this.attach();
+    return new Promise((resolve) => {
+      this.session = { kind: 'widget', def, resolve, signal, drawn: 0 };
+      this.stdout.write(`${ESC}[?25l`);
+      this.#drawWidget();
+    });
+  }
+
+  #widgetKey(s, key) {
+    const finish = (value) => {
+      this.session = null;
+      if (s.drawn) this.stdout.write(`\x1b[${s.drawn}A\r${ESC}[J`);
+      this.stdout.write(`${ESC}[?25h`);
+      s.resolve(value);
+    };
+    if (key.name === 'escape' || key.name === 'ctrl-c' || key.name === 'ctrl-d') return finish(s.def.cancelValue);
+    if (key.name === 'ctrl-l') {
+      s.drawn = 0;
+      this.clearScreen();
+    }
+    if (key.name === 'ignore') return;
+    s.def.onKey(key, { done: finish });
+    if (this.session === s) this.#drawWidget();
+  }
+
+  #drawWidget() {
+    const s = this.session;
+    if (!s || s.kind !== 'widget') return;
+    const lines = s.def.render({ cols: this.cols, rows: this.rows });
+    if (s.drawn) this.stdout.write(`\x1b[${s.drawn}A\r${ESC}[J`);
+    else this.stdout.write('\n');
+    this.stdout.write(`${lines.join('\n')}\n`);
+    s.drawn = lines.length + 1;
   }
 
   // ---------------------------------------------------------------- input parsing
@@ -378,6 +471,8 @@ export class InputBox {
         return { name: 'ctrl-l' };
       case '\x10':
         return { name: 'ctrl-p' };
+      case '\x12':
+        return { name: 'ctrl-r' };
       case '\x02':
         return { name: 'left' };
       case '\x06':
@@ -425,6 +520,7 @@ export class InputBox {
       if (key.name === 'ctrl-c') this.onAbort();
       return;
     }
+    if (s.kind === 'widget') return this.#widgetKey(s, key);
     if (s.kind === 'choose') return this.#chooseKey(s, key);
     return this.#promptKey(s, key);
   }
@@ -434,7 +530,9 @@ export class InputBox {
   #chooseKey(s, key) {
     const finish = (value) => {
       this.session = null;
-      this.stdout.write(`\r${ESC}[2K${ESC}[?25h`);
+      // Clear the complete dialog, not only its last line.
+      if (s.drawn) this.stdout.write(`\x1b[${s.drawn}A\r${ESC}[J`);
+      this.stdout.write(`${ESC}[?25h`);
       s.resolve(value);
     };
     const last = s.choices[s.choices.length - 1];
@@ -469,11 +567,33 @@ export class InputBox {
   #drawChoose() {
     const s = this.session;
     if (!s || s.kind !== 'choose') return;
-    const items = s.choices.map((c, i) => {
-      const label = ` ${c.label} `;
-      return i === s.idx ? `${ESC}[48;5;215m${ESC}[38;5;234m${ESC}[1m${label}${RESET}` : dim(label);
-    });
-    this.stdout.write(`\r${ESC}[2K${ESC}[?25l  ${items.join('  ')}  ${faint('←/→ choose · Enter confirm')}`);
+    const paint = s.accent ?? fg(141);
+    const inner = Math.max(30, Math.min(88, this.cols - 8));
+    const bar = paint('│');
+    const row = (text = '') => `  ${bar} ${text}`;
+    const body = [];
+    for (const l of s.lines ?? []) {
+      const wrapped = wrapCells(l, inner);
+      wrapped.forEach((piece, i) => body.push(row(i === 0 ? piece : `${dim('↳')} ${piece}`)));
+    }
+    const hint = s.hint ?? 'type the letter · ↑/↓ move · Enter confirm · Esc reject';
+    const rows = [
+      `  ${paint('╭─')} ${bold(s.title || 'Choose an option')}`,
+      ...body,
+      ...(body.length ? [row('')] : []),
+      ...s.choices.map((choice, index) => {
+        const selected = index === s.idx;
+        const key = choice.key ? `${choice.key}  ` : '';
+        const label = `${selected ? '❯' : ' '} ${key}${choice.label}`;
+        const fitted = clip(label, inner);
+        return row(selected ? paint(bold(fitted)) : dim(fitted));
+      }),
+      `  ${paint('╰─')} ${dim(clip(hint, inner))}`,
+    ];
+    if (s.drawn) this.stdout.write(`\x1b[${s.drawn}A\r${ESC}[J`);
+    else this.stdout.write('\n');
+    this.stdout.write(`${rows.join('\n')}\n`);
+    s.drawn = rows.length + 1;
   }
 
   // ---------------------------------------------------------------- prompt editing
@@ -711,7 +831,11 @@ export class InputBox {
         for (let i = 0; i < 5; i++) this.#moveVertical(s, 1);
         break;
       case 'ctrl-p':
-        if (!s.chars.length && s.opts.commands?.length) this.#setText(s, '/');
+        // Ctrl+P on the empty main prompt opens the full menu (every page and setting).
+        if (!s.chars.length && s.opts.commands?.length) {
+          s.opts = { ...s.opts, echo: false, history: false };
+          return this.#finish(s, '/menu');
+        }
         break;
       case 'ctrl-l':
         this.clearScreen();
@@ -814,14 +938,16 @@ export class InputBox {
 
     // footer: left (folder) ... right (key hints) or the transient notice
     const boxW = width + 5;
-    const left = st.footerLeft ?? '';
-    const right = s.notice ? fg(215)(s.notice) : (st.footerRight ?? '');
-    if (left || right) {
-      const lw = stringWidth(left);
-      const rw = stringWidth(right);
-      const room = boxW - lw - rw;
-      const l = room >= 2 ? left : clip(left, Math.max(8, boxW - rw - 2));
-      const gap = Math.max(2, boxW - stringWidth(l) - rw);
+    const leftRaw = st.footerLeft ?? '';
+    // Key hints come in tiers (longest first); pick the longest that still fits next to the folder.
+    const tiers = Array.isArray(st.footerRight) ? st.footerRight : [st.footerRight ?? ''];
+    const leftMin = typeof leftRaw === 'function' ? 14 : Math.min(stringWidth(leftRaw), 14);
+    const fits = tiers.find((t) => stringWidth(t) + leftMin + 2 <= boxW) ?? tiers[tiers.length - 1];
+    const right = s.notice ? clip(fg(215)(s.notice), Math.max(10, boxW - leftMin - 2)) : clip(fits, Math.max(6, boxW - 2));
+    const budget = Math.max(8, boxW - stringWidth(right) - 2);
+    const l = typeof leftRaw === 'function' ? leftRaw(budget) : stringWidth(leftRaw) <= budget ? leftRaw : clip(leftRaw, budget);
+    if (l || right) {
+      const gap = Math.max(2, boxW - stringWidth(l) - stringWidth(right));
       lines.push(`${margin}${l}${' '.repeat(gap)}${right}`);
     }
 

@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import { ToolError } from '../utils/errors.js';
+import { checkCommandRules } from '../security/command-rules.js';
 import { display, requireApproval, resolvePath } from './helpers.js';
 
 // Defence in depth, NOT a sandbox: a few catastrophic patterns are refused outright,
@@ -144,12 +145,12 @@ export function finish(res) {
 const runCommandTool = {
   name: 'run_command',
   description:
-    'Run a shell command (cmd.exe on Windows, sh elsewhere) inside the workspace and return its output. The user is shown the exact command and must approve it. Use it for things like "node --check file.js" or "npm test". Interactive programs cannot be used (no stdin).',
+    'Run a shell command (cmd.exe on Windows, sh elsewhere) and return its output. cwd defaults to the workspace; an absolute cwd anywhere on the system is allowed (subject to the access level). The user is shown the exact command and must approve it. Use it for things like "node --check file.js" or "npm test". Interactive programs cannot be used (no stdin).',
   parameters: {
     type: 'object',
     properties: {
       command: { type: 'string', description: 'The full command line.' },
-      cwd: { type: 'string', description: 'Working directory relative to the workspace root. Default ".".' },
+      cwd: { type: 'string', description: 'Working directory: relative to the workspace, or an absolute path anywhere on the system. Default ".".' },
       timeout_ms: { type: 'integer', description: 'Hard time limit in ms. Set it to what the command SHOULD take plus a margin (quick checks 10000-20000, installs/builds 120000-300000). The command is killed when it is exceeded. Max 600000.' },
       idle_timeout_ms: { type: 'integer', description: 'Kill the command if it prints nothing for this many ms (default 30000; 0 disables).' },
     },
@@ -159,7 +160,9 @@ const runCommandTool = {
     const blocked = findBlockedPattern(command);
     if (blocked) throw new ToolError(`Command refused by the safety policy (${blocked}).`);
     const dir = await resolvePath(ctx, cwd, 'run a command in');
-    await requireApproval(ctx, 'runCommand', `Run command in ${display(ctx, dir)}:\n    ${command}`);
+    const rule = checkCommandRules(command, ctx.settings.rules);
+    if (rule === 'deny') throw new ToolError('Command refused: it matches a deny rule in settings.rules.denyCommands. Use another approach.');
+    if (rule !== 'allow') await requireApproval(ctx, 'runCommand', `Run command in ${display(ctx, dir)}:\n    ${command}`);
     const res = await runProcess(command, [], {
       cwd: dir,
       shell: true,
@@ -181,14 +184,16 @@ const runNodeTool = {
     properties: {
       file: { type: 'string', description: 'Script path, relative to the workspace root.' },
       args: { type: 'array', items: { type: 'string' }, description: 'Command-line arguments (strings).' },
+      cwd: { type: 'string', description: 'Working directory (relative to the workspace, or an absolute path anywhere on the system). Default: workspace root.' },
       timeout_ms: { type: 'integer', description: 'Hard time limit in ms. Set it to what the command SHOULD take plus a margin (quick checks 10000-20000, installs/builds 120000-300000). The command is killed when it is exceeded. Max 600000.' },
       idle_timeout_ms: { type: 'integer', description: 'Kill the command if it prints nothing for this many ms (default 30000; 0 disables).' },
     },
     required: ['file'],
   },
-  async execute({ file, args = [], timeout_ms, idle_timeout_ms }, ctx) {
+  async execute({ file, args = [], cwd, timeout_ms, idle_timeout_ms }, ctx) {
     if (!args.every((a) => typeof a === 'string')) throw new ToolError('args must be an array of strings.');
     const abs = await resolvePath(ctx, file, 'run a script at');
+    const workDir = cwd ? await resolvePath(ctx, cwd, 'run a script in') : ctx.guard.root;
     try {
       const stat = await fs.stat(abs);
       if (!stat.isFile()) throw new ToolError(`"${file}" is not a file.`);
@@ -202,7 +207,7 @@ const runNodeTool = {
       `Run Node.js script: node ${display(ctx, abs)}${args.length ? ` ${args.join(' ')}` : ''}`,
     );
     const res = await runProcess(process.execPath, [abs, ...args], {
-      cwd: ctx.guard.root,
+      cwd: workDir,
       shell: false,
       timeoutMs: timeoutFor(ctx, timeout_ms),
       idleMs: idleFor(ctx, idle_timeout_ms),
@@ -225,14 +230,16 @@ const runPythonTool = {
     properties: {
       file: { type: 'string', description: 'Script path, relative to the workspace root.' },
       args: { type: 'array', items: { type: 'string' }, description: 'Command-line arguments (strings).' },
+      cwd: { type: 'string', description: 'Working directory (relative to the workspace, or an absolute path anywhere on the system). Default: workspace root.' },
       timeout_ms: { type: 'integer', description: 'Hard time limit in ms. Set it to what the command SHOULD take plus a margin (quick checks 10000-20000, installs/builds 120000-300000). The command is killed when it is exceeded. Max 600000.' },
       idle_timeout_ms: { type: 'integer', description: 'Kill the command if it prints nothing for this many ms (default 30000; 0 disables).' },
     },
     required: ['file'],
   },
-  async execute({ file, args = [], timeout_ms, idle_timeout_ms }, ctx) {
+  async execute({ file, args = [], cwd, timeout_ms, idle_timeout_ms }, ctx) {
     if (!args.every((a) => typeof a === 'string')) throw new ToolError('args must be an array of strings.');
     const abs = await resolvePath(ctx, file, 'run a script at');
+    const workDir = cwd ? await resolvePath(ctx, cwd, 'run a script in') : ctx.guard.root;
     try {
       const stat = await fs.stat(abs);
       if (!stat.isFile()) throw new ToolError(`"${file}" is not a file.`);
@@ -248,7 +255,7 @@ const runPythonTool = {
     let res;
     for (const exe of PY_CANDIDATES) {
       res = await runProcess(exe, [abs, ...args], {
-        cwd: ctx.guard.root,
+        cwd: workDir,
         shell: false,
         timeoutMs: timeoutFor(ctx, timeout_ms),
       idleMs: idleFor(ctx, idle_timeout_ms),

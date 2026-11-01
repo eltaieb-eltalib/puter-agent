@@ -11,6 +11,7 @@ import { Permissions } from './security/permissions.js';
 import { PathGuard } from './security/path-guard.js';
 import { TerminalUI } from './terminal/interface.js';
 import { createDefaultRegistry } from './tools/index.js';
+import { connectMcpServers } from './core/mcp.js';
 import { loadEnvFile } from './utils/env.js';
 import { explainError } from './utils/errors.js';
 import { color } from './utils/logger.js';
@@ -26,10 +27,12 @@ Usage: node index.js [options]
   -m, --model <id>           Model to use (default from config/settings.json)
       --mode <plan|build>    plan = read-only (explore/search/plan), build = full access (default)
   -p, --prompt <text>        Run ONE request non-interactively, then exit
+      --output-format <fmt>  With -p: text (default) or json ({ result, stop_reason, steps, usage, changes })
+      --access <level>       workspace | ask | full (full = any folder, commands run without asking)
   -h, --help                 Show this help
 
-Provider: puter (default), gemini or openai. Pick with AGENT_PROVIDER in .env, config/connect.json, or /connect inside the app.
-Authentication: PUTER_AUTH_TOKEN (puter, or sign in through the browser) / GEMINI_API_KEY (gemini) / OPENAI_API_KEY (openai), all in .env.`;
+Provider: puter (default), gemini, openai, agentrouter, anthropic, anyapi, deepseek, openrouter, groq, mistral, xai, cerebras, together, fireworks, nvidia, perplexity, zai, moonshot, qwen, ollama or lmstudio. Pick with AGENT_PROVIDER in .env, config/connect.json, or /connect.
+Authentication: set the matching provider API key in .env; local Ollama/LM Studio can run without a key.`;
 
 async function main() {
   loadEnvFile(path.join(ROOT, '.env'));
@@ -47,12 +50,19 @@ async function main() {
     outsideWorkspace: settings.security.outsideWorkspace,
   });
   const registry = createDefaultRegistry();
+  if (cli.access) permissions.setAccess(cli.access);
+  const jsonMode = cli.prompt && cli.outputFormat === 'json';
+  const mcpStatus = await connectMcpServers(settings, registry, settings.workspace);
+  if (!jsonMode) {
+    for (const m of mcpStatus) console.log(m.ok ? color.dim(`MCP ${m.name}: ${m.tools} tool(s)`) : color.yellow(`MCP ${m.name} failed: ${m.error}`));
+  }
+  const say = (m) => (jsonMode ? console.error(m) : console.log(m));
   const choice = resolveProvider({
     rootDir: ROOT,
     cliModel: cli.model,
     settingsModel: settings.model,
   });
-  if (choice.unknown) console.log(color.yellow(`Unknown provider "${choice.unknown}", using puter.`));
+  if (choice.unknown) say(color.yellow(`Unknown provider "${choice.unknown}", using puter.`));
   settings.model = choice.model;
   const provider = createProvider(choice.name, {
     timeoutMs: settings.requestTimeoutMs,
@@ -62,19 +72,30 @@ async function main() {
   });
 
   if (choice.name === 'puter') {
-    console.log(
+    say(
       provider.hasToken
         ? 'Connecting to Puter with PUTER_AUTH_TOKEN...'
         : 'Signing in to Puter: a browser window will open (or set PUTER_AUTH_TOKEN in .env to skip this)...',
     );
   } else {
-    console.log(`Connecting to ${choice.name}...`);
+    say(`Connecting to ${choice.name}...`);
   }
   await provider.connect();
 
   const agent = new Agent({ provider, registry, settings, guard, permissions, model: settings.model, mode: settings.mode });
+  if (jsonMode) {
+    // Scriptable run: no UI, nothing is asked (approvals are denied unless --access full / settings allow them).
+    try {
+      const res = await agent.run(cli.prompt, {});
+      console.log(JSON.stringify({ result: res.content, stop_reason: res.stopReason, steps: res.steps, usage: res.usage, changes: res.changes, is_error: res.stopReason !== 'done' }));
+      process.exit(res.stopReason === 'done' ? 0 : 1);
+    } catch (err) {
+      console.log(JSON.stringify({ result: '', is_error: true, error: explainError(err) }));
+      process.exit(1);
+    }
+  }
   const ui = new TerminalUI({ agent, provider, settings, version, tui });
-  permissions.setPrompt((description) => ui.confirm(description));
+  permissions.setPrompt((description, action) => ui.confirm(description, action));
   if (cli.prompt) {
     await ui.startOnce(cli.prompt);
     return;

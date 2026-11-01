@@ -96,3 +96,31 @@ export async function undoLast(root) {
   }
   return null;
 }
+
+/** Checkpoints newest first: [{ id, files }] (one per task that changed files). */
+export async function listCheckpoints(root) {
+  const out = [];
+  for (const id of (await listIds(root)).reverse()) {
+    try {
+      const m = JSON.parse(await fs.readFile(path.join(root, DIR, id, 'manifest.json'), 'utf8'));
+      out.push({ id, files: m.entries.length, paths: m.entries.map((e) => e.rel) });
+    } catch {
+      /* broken checkpoint: ignore */
+    }
+  }
+  return out;
+}
+
+/** Roll the workspace back to BEFORE checkpoint `id` (undoes it and every newer one). Returns the undone list. */
+export async function rewindTo(root, id) {
+  const known = await listCheckpoints(root);
+  if (!known.some((c) => c.id === id)) return null;
+  const undone = [];
+  for (;;) {
+    const res = await undoLast(root);
+    if (!res) break;
+    undone.push(res);
+    if (res.id === id) break;
+  }
+  return undone;
+}

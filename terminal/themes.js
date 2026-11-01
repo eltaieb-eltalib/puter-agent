@@ -1,8 +1,9 @@
 import { color, orange, teal, violet } from '../utils/logger.js';
 
-// build/plan = accent colour of the prompt box (bar + mode label) in each mode.
+// Puter Agent keeps its own visual identity; OpenCode-inspired interaction patterns
+// are implemented in the terminal UI without adopting OpenCode branding.
 export const THEMES = {
-  opencode: {
+  puter: {
     assistant: violet,
     user: color.cyan,
     build: teal,
@@ -11,11 +12,12 @@ export const THEMES = {
     ok: color.green,
     warn: color.yellow,
     err: color.red,
+    accent: violet,
   },
 };
-THEMES.default = THEMES.opencode;
+THEMES.default = THEMES.puter;
 
 export function resolveTheme(tui = {}) {
-  const name = tui.theme || 'default';
-  return THEMES[name] ?? THEMES.default;
+  const name = tui.theme || 'puter';
+  return THEMES[name] ?? THEMES.puter;
 }

@@ -10,6 +10,60 @@
     },
     "openai": {
       "model": "gpt-6-astra"
+    },
+    "agentrouter": {
+      "model": "gpt-6.1-sol"
+    },
+    "anthropic": {
+      "model": "claude-sonnet-4-5"
+    },
+    "anyapi": {
+      "model": "google/gemini-2.5-flash-lite"
+    },
+    "deepseek": {
+      "model": "deepseek-chat"
+    },
+    "openrouter": {
+      "model": "deepseek/deepseek-chat-v3.1"
+    },
+    "groq": {
+      "model": "llama-3.3-70b-versatile"
+    },
+    "mistral": {
+      "model": "mistral-large-latest"
+    },
+    "xai": {
+      "model": "grok-3"
+    },
+    "cerebras": {
+      "model": "llama-3.3-70b"
+    },
+    "together": {
+      "model": "meta-llama/Llama-3.3-70B-Instruct-Turbo"
+    },
+    "fireworks": {
+      "model": "accounts/fireworks/models/llama-v3p3-70b-instruct"
+    },
+    "nvidia": {
+      "model": "meta/llama-3.3-70b-instruct"
+    },
+    "perplexity": {
+      "model": "sonar-pro"
+    },
+    "zai": {
+      "model": "glm-4.5"
+    },
+    "moonshot": {
+      "model": "kimi-k2-0905-preview"
+    },
+    "qwen": {
+      "model": "qwen-plus"
+    },
+    "ollama": {
+      "model": "qwen2.5-coder:7b"
+    },
+    "lmstudio": {
+      "model": "local-model"
     }
   }
 }

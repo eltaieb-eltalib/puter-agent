@@ -3,11 +3,40 @@ import { runAgentLoop } from './agent-loop.js';
 import { routeRequest } from './router.js';
 import { formatResult } from '../tools/registry.js';
 import { loadSession, saveSession } from './session.js';
-import { Checkpoint, pruneCheckpoints, undoLast } from './checkpoint.js';
+import { expandMentions } from './mentions.js';
+import { Hooks } from './hooks.js';
+import { Checkpoint, listCheckpoints, pruneCheckpoints, rewindTo, undoLast } from './checkpoint.js';
 import { compactHistory } from './compact.js';
 
-const KEEP_FULL_TOOL_RESULTS = 10;
-const OLD_RESULT_LIMIT = 400;
+const KEEP_FULL_TOOL_RESULTS = 6;
+const OLD_RESULT_LIMIT = 900;
+
+const TOOL_GROUPS = {
+  files: ['read_file', 'list_files', 'search_files', 'create_file', 'edit_file', 'delete_file', 'move_file', 'create_directory', 'list_drives', 'glob', 'multi_edit'],
+  terminal: ['run_command', 'run_node', 'run_python'],
+  system: ['open_path'],
+  delegate: ['task'],
+  web: ['web_search', 'web_fetch'],
+  memory: ['memory_read', 'memory_write', 'memory_forget'],
+  task: ['todo_read', 'todo_write', 'ask_user'],
+  image: ['image_describe'],
+};
+
+function selectTools(text, mode, settings) {
+  if (settings.optimization?.dynamicTools === false) return null;
+  const value = String(text ?? '').toLowerCase();
+  const names = new Set([...TOOL_GROUPS.files, ...TOOL_GROUPS.memory, ...TOOL_GROUPS.task]);
+  const research = /\b(search|research|latest|news|weather|price|online|internet|web)\b|ابحث|بحث|الانترنت|الويب|احدث|آخر|اخبار|سعر|طقس/.test(value);
+  const needsTerminal = /\b(run|execute|install|test|build|compile|terminal|command|npm|node|python|git|fix|edit|implement|refactor|debug|change|update|create|write)\b|شغل|نفذ|اختبر|ثبت|ابن|بناء|امر|طرفية|عدل|تعديل|اصلح|أصلح|نفذ|برمج|حدث|تحديث|اكتب|انشئ|أنشئ/.test(value);
+  const needsOpen = /\b(open|launch|start|show|desktop|downloads|documents|drive|folder|system)\b|افتح|فتح|شغل|سطح المكتب|التنزيلات|المستندات|قرص|درايف|مجلد|النظام/.test(value);
+  const needsImage = /\b(image|picture|photo|screenshot)\b|صورة|صوره|لقطة/.test(value);
+  if (research) for (const name of TOOL_GROUPS.web) names.add(name);
+  if (mode !== 'plan' && needsTerminal) for (const name of TOOL_GROUPS.terminal) names.add(name);
+  if (mode !== 'plan' && (needsOpen || needsTerminal)) for (const name of TOOL_GROUPS.system) names.add(name);
+  if (mode !== 'plan' || research) for (const name of TOOL_GROUPS.delegate) names.add(name);
+  if (needsImage) for (const name of TOOL_GROUPS.image) names.add(name);
+  return [...names];
+}
 export const MODES = ['build', 'plan'];
 
 /**
@@ -26,6 +55,8 @@ export class Agent {
     this.asker = null; // set by the terminal UI: (question, options) => Promise<string|null>
     this.state = { todos: [] };
     this.messages = [];
+    this.hooks = new Hooks(settings.hooks, { cwd: guard.root });
+    this.sessionUsage = { totalTokens: 0, cachedTokens: 0, modelCalls: 0, toolCalls: 0, tasks: 0 };
     this.reset();
   }
 
@@ -56,6 +87,7 @@ export class Agent {
   /** Switch workspace; the conversation restarts because the system prompt names the folder. */
   setWorkspace(dir) {
     this.guard.setWorkspace(dir);
+    this.hooks.setCwd(this.guard.root);
     this.reset();
   }
 
@@ -79,6 +111,38 @@ export class Agent {
     }
   }
 
+  checkpoints() {
+    return listCheckpoints(this.guard.root);
+  }
+
+  rewind(id) {
+    return rewindTo(this.guard.root, id);
+  }
+
+  /** Numbers for /context: how big the conversation is and how close it is to automatic compaction. */
+  contextInfo() {
+    const byRole = { system: 0, user: 0, assistant: 0, tool: 0 };
+    for (const m of this.messages) {
+      const n = (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content ?? '').length) + (m.tool_calls ? JSON.stringify(m.tool_calls).length : 0);
+      byRole[m.role] = (byRole[m.role] ?? 0) + n;
+    }
+    const chars = Object.values(byRole).reduce((a, b) => a + b, 0);
+    const limit = this.settings.context?.compactAtChars ?? 120000;
+    return { messages: this.messages.length, chars, approxTokens: Math.round(chars / 4), byRole, limit, percent: Math.min(999, Math.round((chars / limit) * 100)), tools: this.registry.list().length, session: { ...this.sessionUsage } };
+  }
+
+  /** MCP tools are always offered (outside plan mode, where only read-only tools exist anyway). */
+  #withMcp(names) {
+    if (!names) return names;
+    const mcp = this.registry.list().filter((t) => t.name.startsWith('mcp__')).map((t) => t.name);
+    return [...names, ...mcp];
+  }
+
+  /** Force-summarise the old part of the conversation now (/compact). Returns false if too short. */
+  async compactNow(signal) {
+    return compactHistory({ messages: this.messages, provider: this.provider, model: this.model, limit: 0, keepTurns: 1, signal });
+  }
+
   /** Restore the last saved conversation of this workspace. Returns false if there is none. */
   async resume() {
     const data = await loadSession(this.guard.root);
@@ -92,7 +156,9 @@ export class Agent {
   async run(userText, { signal, emit } = {}) {
     this.messages[0] = this.#systemMessage(); // picks up new memory / AGENTS.md changes
     await this.#compact(signal, emit);
-    this.messages.push({ role: 'user', content: userText });
+    const { text: expanded, attached } = expandMentions(userText, this.guard);
+    if (attached.length) emit?.({ type: 'mentions', files: attached });
+    this.messages.push({ role: 'user', content: expanded });
     const changes = [];
     const checkpoint = new Checkpoint(this.guard.root);
     const ctx = {
@@ -103,6 +169,11 @@ export class Agent {
       checkpoint,
       signal,
       mode: this.mode,
+      hooks: this.hooks,
+      provider: this.provider,
+      model: this.model,
+      registry: this.registry,
+      depth: 0,
       state: this.state,
       ask: this.asker ? (q, opts) => this.asker(q, opts) : undefined,
     };
@@ -117,12 +188,20 @@ export class Agent {
         maxSteps: this.settings.maxSteps,
         retry: this.settings.retry,
         maxResultChars: this.settings.limits.maxToolResultChars,
+        toolNames: this.#withMcp(selectTools(userText, this.mode, this.settings)),
+        context: this.settings.optimization ?? {},
         verify: this.settings.verify?.enabled !== false,
         verifyNudges: this.settings.verify?.nudges ?? 2,
         signal,
         emit,
       });
       this.lastCheckpoint = checkpoint.size;
+      const u = result.usage ?? {};
+      this.sessionUsage.totalTokens += Number(u.totalTokens) || 0;
+      this.sessionUsage.cachedTokens += Number(u.cachedTokens) || 0;
+      this.sessionUsage.modelCalls += Number(u.modelCalls) || 0;
+      this.sessionUsage.toolCalls += Number(u.toolCalls) || 0;
+      this.sessionUsage.tasks += 1;
       return { ...result, changes };
     } catch (err) {
       // The loop keeps history valid (see runAgentLoop). The only unsafe leftover is a user
