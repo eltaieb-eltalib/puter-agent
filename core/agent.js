@@ -71,6 +71,9 @@ export class Agent {
     this.sessionUsage = { totalTokens: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, modelCalls: 0, toolCalls: 0, cachedToolCalls: 0, dedupedResults: 0, latencyMs: 0, tasks: 0 };
     this.lastAnalysis = null;
     this.busy = false;
+    if (permissions && !permissions.onDecision) {
+      permissions.onDecision = ({ action, description, answer, auto }) => this.audit.record({ tool: 'approval', args: { action, description }, ok: answer === 'once' || answer === 'always', answer, auto });
+    }
     this.reset();
   }
 
@@ -195,6 +198,7 @@ export class Agent {
     const startedAt = Date.now();
     this.messages[0] = this.#systemMessage(); // picks up new memory / AGENTS.md changes
     this.cache.bumpGeneration(); // files may have changed outside the agent since the last request
+    this.permissions?.beginTask?.();
     await this.#compact(signal, emit);
     const { text: expanded, attached } = expandMentions(userText, this.guard);
     if (attached.length) emit?.({ type: 'mentions', files: attached });

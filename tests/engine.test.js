@@ -13,6 +13,7 @@ import { compactHistory } from '../core/compact.js';
 import { AuditLog } from '../core/audit.js';
 import { Agent } from '../core/agent.js';
 import { DEFAULTS } from '../config/load.js';
+import { Permissions } from '../security/permissions.js';
 import { FakeProvider, makeEnv, textReply, toolReply } from './helpers.js';
 
 describe('LRU cache', () => {
@@ -383,5 +384,32 @@ describe('Agent integration', () => {
     } finally {
       await env.cleanup();
     }
+  });
+});
+
+describe('permissions', () => {
+  test('once / always / never / cancel and exact-rejection memory', async () => {
+    const answers = ['no', 'never', 'cancel', 'always'];
+    const asked = [];
+    let cancelled = 0;
+    const decisions = [];
+    const p = new Permissions({ approvals: { runCommand: true, deleteFile: true, moveFile: true }, prompt: async (d, a) => (asked.push(`${a}:${d}`), answers.shift()) });
+    p.onCancel = () => cancelled++;
+    p.onDecision = (d) => decisions.push(d.answer);
+    assert.equal(await p.confirm('runCommand', 'rm x'), false); // no
+    assert.equal(await p.confirm('runCommand', 'rm x'), false, 'same request again: refused without asking');
+    assert.equal(asked.length, 1);
+    p.beginTask();
+    assert.equal(await p.confirm('runCommand', 'rm x'), false); // never
+    assert.equal(await p.confirm('runCommand', 'ls'), false, 'never = whole action denied for the session');
+    assert.equal(asked.length, 2);
+    assert.equal(await p.confirm('deleteFile', 'a.txt'), false); // cancel
+    assert.equal(cancelled, 1);
+    assert.equal(await p.confirm('moveFile', 'a -> b'), true); // always
+    assert.equal(await p.confirm('moveFile', 'c -> d'), true);
+    assert.equal(asked.length, 4);
+    assert.deepEqual(decisions, ['no', 'denied-before', 'never', 'denied-before', 'cancel', 'always', 'always']);
+    p.revokeAll();
+    assert.equal(p.isDenied('runCommand'), false);
   });
 });

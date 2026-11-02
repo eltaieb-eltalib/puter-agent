@@ -134,7 +134,9 @@ export function classifyError(err) {
     return make(ErrorKind.RATE_LIMIT);
   }
   if (
-    /network_error|invalid_stream_response|econnreset|econnrefused|enotfound|eai_again|fetch failed|socket hang up|network/.test(
+    // APIConnectionError (OpenAI SDK, used by many providers) says only "Connection error.".
+    err?.name === 'APIConnectionError' ||
+    /network_error|invalid_stream_response|econnreset|econnrefused|enotfound|eai_again|fetch failed|socket hang up|network|connection (?:error|reset|refused|closed)|premature close|terminated/.test(
       text,
     )
   ) {

@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { AgentError, ErrorKind, classifyError, registerSecret } from '../utils/errors.js';
 
 export const OPENAI_DEFAULT_MODEL = 'gpt-6.1-sol';
@@ -216,7 +217,7 @@ export class OpenAIProvider {
     return CURATED_MODELS.map((id) => ({ id, provider: 'openai' }));
   }
 
-  async chat({ model, messages, tools = [], signal } = {}) {
+  async chat({ model, messages, tools = [], signal, responseFormat } = {}) {
     if (signal?.aborted) throw new AgentError('Request cancelled.', { kind: ErrorKind.ABORTED });
     const client = await this.#sdk();
     const timeout = AbortSignal.timeout(this.timeoutMs);
@@ -228,6 +229,10 @@ export class OpenAIProvider {
       input,
       ...(instructions ? { instructions } : {}),
       ...(tools.length ? { tools: toOpenAITools(tools) } : {}),
+      ...(responseFormat === 'json' ? { text: { format: { type: 'json_object' } } } : {}),
+      // OpenAI caches long identical prompt prefixes automatically; a stable key per system prompt
+      // routes requests of the same conversation to the same cache.
+      ...(instructions && this.promptCacheKey !== false ? { prompt_cache_key: `pa-${crypto.createHash('sha1').update(`${modelId}\n${instructions}`).digest('hex').slice(0, 24)}` } : {}),
       store: false,
       ...(isReasoningModel(modelId) ? {
         reasoning: {

@@ -30,7 +30,7 @@ export class CompatibleProvider {
     } catch { /* Some gateways disable model discovery; curated defaults remain selectable. */ }
     return (PROVIDER_PRESETS[this.name]?.models ?? [this.defaultModel]).map(id => ({ id, provider: this.name }));
   }
-  async chat({ model, messages = [], tools = [], signal } = {}) {
+  async chat({ model, messages = [], tools = [], signal, responseFormat, onDelta } = {}) {
     if (signal?.aborted) throw new AgentError('Request cancelled.', { kind: ErrorKind.ABORTED });
     const timeout = AbortSignal.timeout(this.timeoutMs);
     const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
@@ -42,22 +42,65 @@ export class CompatibleProvider {
         ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}),
       })),
       ...(tools.length ? { tools: tools.filter(t => t?.type === 'function').map(t => ({ type: 'function', function: t.function })) } : {}),
+      ...(responseFormat === 'json' ? { response_format: { type: 'json_object' } } : {}),
     };
     try {
+      if (onDelta && this.stream !== false) {
+        try {
+          return await this.#streamChat(params, combined, onDelta);
+        } catch (err) {
+          // Gateways without streaming / stream_options support: remember it and use a normal request.
+          if (signal?.aborted || timeout.aborted || !/stream/i.test(String(err?.message ?? ''))) throw err;
+          this.stream = false;
+        }
+      }
       const result = await this.#client.chat.completions.create(params, { signal: combined });
       const msg = result.choices?.[0]?.message ?? {};
-      const toolCalls = (msg.tool_calls ?? []).map(call => {
-        const rawArguments = call.function?.arguments ?? '{}'; let args = {}; let parseError;
-        try { args = JSON.parse(rawArguments); } catch (err) { parseError = `Tool arguments were not valid JSON (${err.message}).`; }
-        return { id: call.id, name: call.function?.name, arguments: args, rawArguments, parseError };
-      });
-      return { content: String(msg.content ?? ''), toolCalls, message: { role: 'assistant', content: String(msg.content ?? ''), ...(msg.tool_calls?.length ? { tool_calls: msg.tool_calls } : {}) }, usage: result.usage };
+      return toReply(msg.content, msg.tool_calls ?? [], result.usage);
     } catch (err) {
       if (signal?.aborted) throw new AgentError('Request cancelled.', { kind: ErrorKind.ABORTED, cause: err });
       if (timeout.aborted) throw new AgentError(`${this.name} request timed out after ${this.timeoutMs} ms.`, { kind: ErrorKind.TIMEOUT, cause: err });
       throw classifyError(err);
     }
   }
+
+  /** Streaming request: text deltas go to onDelta; tool-call fragments are assembled by index. */
+  async #streamChat(params, signal, onDelta) {
+    const stream = await this.#client.chat.completions.create({ ...params, stream: true, stream_options: { include_usage: true } }, { signal });
+    let content = '';
+    let usage;
+    const calls = [];
+    for await (const chunk of stream) {
+      if (chunk.usage) usage = chunk.usage;
+      const delta = chunk.choices?.[0]?.delta;
+      if (!delta) continue;
+      if (delta.content) {
+        content += delta.content;
+        onDelta(delta.content, content);
+      }
+      for (const tc of delta.tool_calls ?? []) {
+        const i = tc.index ?? calls.length;
+        calls[i] ??= { id: '', type: 'function', function: { name: '', arguments: '' } };
+        if (tc.id) calls[i].id = tc.id;
+        if (tc.function?.name) calls[i].function.name += tc.function.name;
+        if (tc.function?.arguments) calls[i].function.arguments += tc.function.arguments;
+      }
+    }
+    return toReply(content, calls.filter(Boolean).map((c, i) => ({ ...c, id: c.id || `call_${Date.now()}_${i}` })), usage);
+  }
+}
+
+/** Build the provider-neutral reply from Chat Completions content + tool_calls. */
+export function toReply(content, rawCalls, usage) {
+  const text = String(content ?? '');
+  const toolCalls = rawCalls.map((call) => {
+    const rawArguments = call.function?.arguments || '{}';
+    let args = {};
+    let parseError;
+    try { args = JSON.parse(rawArguments); } catch (err) { parseError = `Tool arguments were not valid JSON (${err.message}).`; }
+    return { id: call.id, name: call.function?.name, arguments: args, rawArguments, parseError };
+  });
+  return { content: text, toolCalls, message: { role: 'assistant', content: text, ...(rawCalls.length ? { tool_calls: rawCalls } : {}) }, usage };
 }
 
 export const PROVIDER_PRESETS = {

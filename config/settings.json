@@ -30,7 +30,8 @@
     "maxReadBytes": 200000,
     "maxToolResultChars": 10000,
     "commandTimeoutMs": 60000,
-    "maxCommandOutputChars": 20000
+    "maxCommandOutputChars": 20000,
+    "readChunkLines": 250
   },
   "approvals": {
     "createFile": false,
@@ -44,8 +45,11 @@
   },
   "optimization": {
     "dynamicTools": true,
+    "stickyTools": true,
+    "parallelTools": true,
     "keepRecentToolResults": 4,
-    "compressedToolResultChars": 1200
+    "compressedToolResultChars": 500,
+    "compressTriggerChars": 8000
   },
   "security": {
     "outsideWorkspace": "ask"
@@ -68,5 +72,44 @@
     ]
   },
   "hooks": {},
-  "mcpServers": {}
+  "mcpServers": {},
+  "context": {
+    "compactAtChars": 120000,
+    "keepTurns": 2,
+    "summarizer": "local",
+    "manualSummarizer": "model",
+    "maxTokens": 32000
+  },
+  "planning": {
+    "enabled": true,
+    "taskFrame": true
+  },
+  "tools": {
+    "protocol": "auto"
+  },
+  "cache": {
+    "enabled": true,
+    "files": {
+      "maxEntries": 400,
+      "maxMB": 24
+    },
+    "tools": {
+      "maxEntries": 300,
+      "maxMB": 8,
+      "webTtlMs": 600000
+    },
+    "model": {
+      "maxEntries": 100,
+      "maxMB": 4
+    }
+  },
+  "audit": {
+    "enabled": true
+  },
+  "ui": {
+    "rtl": "auto",
+    "statusBar": true,
+    "showPhases": true,
+    "codeHighlight": true
+  }
 }

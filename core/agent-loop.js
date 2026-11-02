@@ -13,12 +13,21 @@ const NUDGE =
 const STUCK_AFTER = 3; // identical failing calls in a row before we stop
 const REPEAT_LIMIT = 4; // identical successful calls with identical results before we stop (loop guard)
 
+/** Normalise usage from OpenAI (chat + responses), Anthropic and Gemini into one shape. */
 export function usageTotals(usage = {}) {
-  const prompt = Number(usage.prompt_tokens ?? usage.input_tokens ?? 0) || 0;
-  const completion = Number(usage.completion_tokens ?? usage.output_tokens ?? 0) || 0;
+  usage = usage ?? {};
+  const prompt = Number(usage.prompt_tokens ?? usage.input_tokens ?? usage.promptTokenCount ?? 0) || 0;
+  const completion = Number(usage.completion_tokens ?? usage.output_tokens ?? usage.candidatesTokenCount ?? 0) || 0;
   const cached =
-    Number(usage.prompt_tokens_details?.cached_tokens ?? usage.input_tokens_details?.cached_tokens ?? usage.cached_tokens ?? usage.cache_read_input_tokens ?? 0) || 0;
-  return { promptTokens: prompt, completionTokens: completion, cachedTokens: cached, totalTokens: Number(usage.total_tokens ?? (prompt + completion)) || 0 };
+    Number(
+      usage.prompt_tokens_details?.cached_tokens ??
+        usage.input_tokens_details?.cached_tokens ??
+        usage.cached_tokens ??
+        usage.cache_read_input_tokens ??
+        usage.cachedContentTokenCount ??
+        0,
+    ) || 0;
+  return { promptTokens: prompt, completionTokens: completion, cachedTokens: cached, totalTokens: Number(usage.total_tokens ?? usage.totalTokenCount ?? (prompt + completion)) || 0 };
 }
 
 /** Compatibility wrapper (older API): compress every old bulky result now, keeping the last `keep`. */
