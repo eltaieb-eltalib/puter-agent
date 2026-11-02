@@ -6,8 +6,10 @@ import { runSearch } from '../tools/web.js';
 import { CONFIG_ROOT as DEFAULT_CONFIG_ROOT, updateSettings } from '../config/settings-store.js';
 import { PROVIDER_NAMES, createProvider, envKeyFor, readConnectFile } from '../providers/provider-manager.js';
 import { saveEnvValue } from '../utils/env.js';
-import { helpPage, menuPage, printContext, printHooks, printMcp, printPermissions, toolsPage } from './pages.js';
-import { ask, fail, hasTui, info, ok, page, pick, warn, yesNo, G, dim, fg } from './ui-kit.js';
+import { helpPage, menuPage, printCache, printContext, printHooks, printMcp, printPermissions, toolsPage } from './pages.js';
+import { getProjectIndex } from '../core/project-index.js';
+import { statusBar } from './components/panels.js';
+import { ask, fail, hasTui, info, ok, page, pick, printPanel, warn, yesNo, G, dim, fg } from './ui-kit.js';
 import { pickDefaultModel } from '../providers/gemini.js';
 import { pickDefaultOpenAIModel } from '../providers/openai.js';
 import { AGENTROUTER_DEFAULT_MODEL } from '../providers/agentrouter.js';
@@ -633,6 +635,67 @@ export const COMMANDS = {
       }
     },
   },
+  history: {
+    usage: '/history',
+    description: 'Scroll back through this session (messages, answers, tool steps)',
+    run: async (ui) => {
+      const lines = ui.transcript?.lines({ rtl: ui.ui?.rtl }) ?? [];
+      await page(ui, 'History', lines, `${ui.transcript?.size ?? 0} entries · ↑/↓ PgUp/PgDn scroll · q close`);
+    },
+  },
+  cache: {
+    usage: '/cache [clear [files|tools|model]]',
+    description: 'Local cache sizes and hit/miss counts; clear them',
+    run: (ui, arg) => {
+      const [sub, which = 'all'] = String(arg ?? '').split(/\s+/);
+      if (sub === 'clear') {
+        try {
+          ui.agent.cache.clear(which);
+        } catch (err) {
+          warn(err.message);
+          return;
+        }
+        ok(`Cache cleared: ${which}.`);
+        return;
+      }
+      printCache(ui);
+    },
+  },
+  stats: {
+    usage: '/stats',
+    description: 'Tokens, provider-cache share, calls, latency and memory for this session',
+    run: (ui) => {
+      const c = ui.agent.contextInfo();
+      console.log(`\n${statusBar({ usage: c.session, context: { tokens: c.tokens, percent: c.tokenPercent }, cache: c.cache, steps: c.session.modelCalls, elapsedMs: c.session.latencyMs })}\n`);
+    },
+  },
+  index: {
+    usage: '/index',
+    description: 'Scan the workspace (incremental) and show the project overview the agent uses',
+    run: async (ui) => {
+      const idx = getProjectIndex(ui.agent.guard.root);
+      const t = Date.now();
+      const scan = await idx.scan();
+      const o = idx.overview();
+      const ch = scan.changes;
+      printPanel('Project index', [
+        { rows: [['Files', `${o.files}${o.truncated ? ' (capped)' : ''} · ${o.symbols} definitions · scanned in ${Date.now() - t} ms`], ['Languages', o.languages.slice(0, 6).map((l) => `${l.name} ${dim(l.files)}`).join('  ') || dim('none')], ['Changed', scan.first ? dim('first scan') : `${ch.added.length} added · ${ch.modified.length} modified · ${ch.removed.length} removed`]] },
+        { heading: 'Key files', rows: o.important.length ? o.important.slice(0, 12) : [dim('none found')] },
+        { heading: 'Entry points', rows: o.entry_points.length ? o.entry_points.slice(0, 8) : [dim('none found')] },
+        { heading: 'Most imported', rows: o.most_imported.length ? o.most_imported.slice(0, 6) : [dim('no internal imports')] },
+      ], { hint: 'Saved in .puter-agent/index.json · only changed files are re-read next time' });
+    },
+  },
+  audit: {
+    usage: '/audit [n]',
+    description: 'Recent executed operations and approval decisions (.puter-agent/audit.log)',
+    run: async (ui, arg) => {
+      const entries = await ui.agent.audit.tail(Number(arg) || 20);
+      if (!entries.length) return info('No operations recorded yet.');
+      const rows = entries.map((e) => `${dim(e.at.slice(11, 19))} ${e.ok ? fg(78)(G.ok) : fg(203)('✗')} ${e.tool}${e.answer ? ` ${dim(e.answer)}` : ''} ${dim(JSON.stringify(e.args).slice(0, 90))}`);
+      printPanel('Audit log', [{ rows }], { hint: ui.agent.audit.file });
+    },
+  },
   tools: {
     usage: '/tools',
     description: 'List the tools the agent can use',
@@ -643,6 +706,7 @@ export const COMMANDS = {
     description: 'Start a fresh conversation',
     run: (ui) => {
       ui.agent.reset();
+      ui.transcript?.clear();
       ok('Conversation cleared.');
     },
   },

@@ -1,7 +1,12 @@
 import os from 'node:os';
 import { stdin, stdout } from 'node:process';
-import { Spinner, card, color, gray, orange, sym, teal, violet } from '../utils/logger.js';
-import { renderMarkdownToTerminal } from '../utils/markdown-to-terminal.js';
+import { card, color, gray, orange, sym, teal, violet } from '../utils/logger.js';
+import { renderMarkdown } from './components/markdown.js';
+import { LiveLine } from './components/live.js';
+import { Transcript } from './components/transcript.js';
+import { PhaseTracker, argSummary, changesPanel, fmtMs, header, outputTail, statusBar, toolCallLine, toolResultLine } from './components/panels.js';
+import { bold as sBold, icons, paint } from './components/style.js';
+import { phaseOf } from '../core/ledger.js';
 import { resolveTheme } from './themes.js';
 import { classifyError, ErrorKind, explainError } from '../utils/errors.js';
 import { COMMANDS, chooseModel, runCommand } from './commands.js';
@@ -10,58 +15,21 @@ import { centre, logoLines, homePanel } from './home.js';
 import { createInput, stringWidth } from './input.js';
 import { redactSecrets } from '../utils/redact.js';
 
-const oneLine = (value, max = 100) => {
-  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
-};
 
-function summarizeArgs(args = {}) {
-  const key = ['path', 'file', 'command', 'query', 'url', 'question', 'from'].find((k) => args[k] !== undefined);
-  if (!key) return '';
-  const extra = args.to ? `  →  ${args.to}` : '';
-  return oneLine(`${args[key]}${extra}`);
-}
+const PHASE_LABEL = { plan: 'Plan', explore: 'Explore', research: 'Research', edit: 'Edit', verify: 'Verify', act: 'Act' };
 
-const fmtTime = (ms) => (ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`);
-
-// What the user sees in the spinner while a tool is working.
+// What the user sees in the live line while a tool is working.
 function workingLabel(name, args = {}) {
-  const target = summarizeArgs(args);
-  switch (name) {
-    case 'create_file':
-      return `Building ${target}`;
-    case 'edit_file':
-      return `Editing ${target}`;
-    case 'run_command':
-    case 'run_node':
-    case 'run_python':
-      return `Running ${target}`;
-    case 'web_search':
-      return `Searching the web: ${target}`;
-    case 'web_fetch':
-      return `Reading ${target}`;
-    case 'read_file':
-    case 'list_files':
-    case 'search_files':
-      return `Reading ${target}`;
-    default:
-      return `Working: ${name}`;
-  }
+  const target = argSummary(args, 60);
+  const verb = {
+    create_file: 'Writing', edit_file: 'Editing', multi_edit: 'Editing', delete_file: 'Deleting', move_file: 'Moving',
+    run_command: 'Running', run_node: 'Running', run_python: 'Running', web_search: 'Searching', web_fetch: 'Reading',
+    read_file: 'Reading', list_files: 'Listing', search_files: 'Searching', glob: 'Finding', project_overview: 'Indexing project',
+    find_symbol: 'Locating', file_relations: 'Mapping', changed_files: 'Checking changes', read_zip: 'Reading archive', task: 'Sub-agent:',
+  }[name] ?? name;
+  const phase = PHASE_LABEL[phaseOf(name)];
+  return `${phase ? paint.faint(`[${phase}] `) : ''}${verb}${target ? ` ${target}` : ''}`;
 }
-
-const TOOL_COLOR = {
-  create_file: orange,
-  edit_file: orange,
-  delete_file: orange,
-  move_file: orange,
-  create_directory: orange,
-  run_command: teal,
-  run_node: teal,
-  run_python: teal,
-  open_path: teal,
-  web_search: violet,
-  web_fetch: violet,
-};
 
 // What each permission is called in the dialog, and how risky it looks.
 const ACTION_TITLE = {
@@ -114,9 +82,30 @@ export class TerminalUI {
     this.input.onToggleMode = () => this.agent.setMode(this.agent.mode === 'plan' ? 'build' : 'plan');
     this.running = false;
     this.abort = null;
-    this.spinner = new Spinner(stdout);
+    this.spinner = new LiveLine(stdout); // name kept: commands and older code use ui.spinner
     this.toolStartedAt = 0;
     this.theme = resolveTheme(tui);
+    this.ui = { rtl: 'auto', statusBar: true, showPhases: true, codeHighlight: true, ...(settings.ui ?? {}) };
+    this.phases = new PhaseTracker();
+    this.transcript = new Transcript();
+    this.pending = 0; // tools started in parallel and not finished yet
+    this.agent.permissions.onCancel = () => this.#abortRun();
+  }
+
+  /** "◆ answer…" - the icon shares the first line unless that line is right-aligned (RTL text). */
+  #speak(text) {
+    const body = this.md(text);
+    const first = body.split('\n')[0] ?? '';
+    return /^\s{6,}\S/.test(first) ? `${paint.accent(icons.ai)}\n${body}` : `${paint.accent(icons.ai)} ${body.trimStart()}`;
+  }
+
+  /** Markdown -> terminal with the user's RTL / highlight settings, indented under the speaker. */
+  md(text, indent = 2) {
+    const width = Math.max(20, (stdout.columns || 80) - indent - 2);
+    return renderMarkdown(text, { width, rtl: this.ui.rtl, highlight: this.ui.codeHighlight })
+      .split('\n')
+      .map((l) => (l ? ' '.repeat(indent) + l : l))
+      .join('\n');
   }
 
   async getModels({ refresh = false } = {}) {
@@ -138,30 +127,51 @@ export class TerminalUI {
     return '';
   }
 
-  banner() {
-    const mode = this.agent.mode === 'plan' ? orange('PLAN · READ ONLY') : teal('BUILD · ACTIVE');
+  banner(status = 'ready') {
     const providerName = this.provider?.name || this.provider?.id || this.settings.provider || 'connected';
-    const width = Math.max(34, Math.min(76, (stdout.columns || 80) - 8));
-    const rule = violet(`  ╭${'─'.repeat(width)}╮`);
-    const edge = violet('  │');
-    const end = violet(`  ╰${'─'.repeat(width)}╯`);
-    console.log(`\n${rule}\n${edge}  ${violet(sym.ai)} ${color.bold('PUTER AGENT')} ${gray(`v${this.version}`)}${' '.repeat(Math.max(1, width - 27 - String(this.version).length))}${edge}\n${edge}  ${gray('MODEL')}  ${color.bold(this.agent.model)}${gray(this.thinkingLabel())}${edge}\n${edge}  ${gray('ENGINE')} ${providerName}   ${gray('MODE')} ${mode}${edge}\n${edge}  ${gray('WORKSPACE')} ${this.#folderLabel()}${edge}\n${end}\n  ${gray('/help')} ${gray('commands')}  ${sym.sep}  ${gray('Shift+Tab')} ${gray('switch mode')}  ${sym.sep}  ${gray('Ctrl+C')} ${gray('cancel')}\n`);
+    console.log(`\n${header({
+      version: this.version,
+      model: this.agent.model,
+      provider: providerName,
+      mode: this.agent.mode,
+      folder: this.#folderLabel(),
+      status,
+      thinking: this.thinkingLabel(),
+      access: this.agent.permissions.accessLevel,
+      width: stdout.columns || 80,
+    })}\n  ${gray('/help')} ${gray('commands')}  ${sym.sep}  ${gray('/history')} ${gray('scroll back')}  ${sym.sep}  ${gray('Shift+Tab')} ${gray('mode')}  ${sym.sep}  ${gray('Ctrl+C')} ${gray('cancel')}\n`);
   }
 
   /** Non-interactive: run one request (`-p "text"`), then exit. */
   async startOnce(text) {
     // Non-interactive: do not create a readline interface.
+    this.#installSignalHandlers();
+    process.once('SIGINT', () => (this.running ? this.#abortRun() : this.#quit(130)));
     await this.#runTask(text);
     // Ensure the CLI exits after the single request finishes.
     // This prevents watchdog idle issues on some environments.
     process.exit(0);
   }
 
-  #quit() {
+  #quit(code = 0) {
     this.spinner.stop();
     this.input.detach();
-    stdout.write('\n');
-    process.exit(0);
+    stdout.write('\x1b[?25h\x1b[?2004l\n'); // cursor back, bracketed paste off
+    process.exit(code);
+  }
+
+  /** SIGTERM / SIGHUP: cancel the running task, save the conversation, restore the terminal, exit. */
+  #installSignalHandlers() {
+    if (this.signalsInstalled) return;
+    this.signalsInstalled = true;
+    const shutdown = (signal) => {
+      this.abort?.abort();
+      this.spinner.stop();
+      const code = signal === 'SIGTERM' ? 143 : 129;
+      Promise.race([this.agent.save().catch(() => {}), new Promise((r) => setTimeout(r, 800))]).finally(() => this.#quit(code));
+    };
+    process.once('SIGTERM', () => shutdown('SIGTERM'));
+    if (process.platform !== 'win32') process.once('SIGHUP', () => shutdown('SIGHUP'));
   }
 
   #abortRun() {
@@ -229,6 +239,7 @@ export class TerminalUI {
 
   async start() {
     if (!this.input.isTTY) process.on('SIGINT', () => (this.running ? this.#abortRun() : this.#quit()));
+    this.#installSignalHandlers();
     this.input.attach();
 
     await this.getModels();
@@ -289,13 +300,14 @@ export class TerminalUI {
   }
 
   /**
-   * Approval prompt used by the Permissions layer.
-   * Returns 'once' | 'always' | false. "always" lasts for this session only.
+   * Approval prompt used by the Permissions layer. Shows the exact operation (command line, path,
+   * diff) before anything runs. Returns 'once' | 'always' | false | 'never' | 'cancel'.
+   * "always"/"never" last for this session only.
    */
   async confirm(description, action) {
     return this.#paused(async () => {
       const [what, risk] = ACTION_TITLE[action] ?? ['Approval needed', 'warn'];
-      const paint = risk === 'danger' ? color.red : risk === 'info' ? violet : orange;
+      const tone = risk === 'danger' ? color.red : risk === 'info' ? violet : orange;
       const scope = ACTION_LABEL[action];
       const plan = this.agent.mode === 'plan';
       const access = this.agent.permissions.accessLevel;
@@ -312,11 +324,20 @@ export class TerminalUI {
           { key: 'o', aliases: ['y', '1'], label: 'Allow once (only this)', value: 'once' },
           { key: 'a', aliases: ['2'], label: scope ? `Always: ${scope} (this session)` : 'Always: this kind (this session)', value: 'always' },
           { key: 'n', aliases: ['r', '3'], label: 'Reject (agent tries another way)', value: false },
+          { key: 'v', aliases: ['4'], label: scope ? `Never: ${scope} (this session)` : 'Never: this kind (this session)', value: 'never' },
+          { key: 'x', aliases: ['5'], label: 'Reject and cancel the whole task', value: 'cancel' },
         ],
-        { signal: this.abort?.signal, lines, accent: paint, hint: 'o once · a always · n reject · ↑/↓ move · Enter confirm · Esc reject' },
+        { signal: this.abort?.signal, lines, accent: tone, hint: 'o once · a always · n reject · v never · x cancel task · ↑/↓ · Enter · Esc reject' },
       );
-      const verdict = choice === 'always' ? `always allowed for this session: ${scope ?? what}  ${sym.sep}  /permissions reset to undo` : choice ? `allowed once: ${what}` : `rejected: ${what}`;
-      stdout.write(`  ${choice ? color.green(sym.ok) : color.red(sym.fail)} ${gray(verdict)}\n`);
+      const verdict =
+        choice === 'always' ? `always allowed for this session: ${scope ?? what}  ${sym.sep}  /permissions reset to undo`
+        : choice === 'once' ? `allowed once: ${what}`
+        : choice === 'never' ? `denied for this session: ${scope ?? what}  ${sym.sep}  /permissions reset to undo`
+        : choice === 'cancel' ? 'rejected - cancelling the task'
+        : `rejected: ${what}`;
+      const allowed = choice === 'once' || choice === 'always';
+      stdout.write(`  ${allowed ? color.green(sym.ok) : color.red(sym.fail)} ${gray(verdict)}\n`);
+      this.transcript.add('event', verdict);
       return choice;
     });
   }
@@ -339,13 +360,25 @@ export class TerminalUI {
   }
 
   async #runTask(text) {
+    if (this.running) {
+      this.notify('Busy', 'A task is already running. Press Ctrl+C to cancel it first.', 'warning');
+      return;
+    }
     this.running = true;
     this.abort = new AbortController();
+    this.phases.reset();
+    this.pending = 0;
+    this.streamed = 0;
+    this.transcript.add('user', text);
     const startedAt = Date.now();
     try {
       const result = await this.agent.run(text, {
         signal: this.abort.signal,
         emit: (event) => this.#render(event),
+        onDelta: (_delta, full) => {
+          this.streamed = full.length;
+          this.spinner.update(`${paint.faint('[Answer] ')}Writing`, `${this.streamed} chars`);
+        },
       });
       this.spinner.stop();
       this.#renderResult(result, Date.now() - startedAt);
@@ -356,134 +389,164 @@ export class TerminalUI {
       this.spinner.stop();
       this.running = false;
       this.abort = null;
+      this.currentTool = null;
     }
   }
 
   /** Compact toast-style notification used for important lifecycle feedback. */
   notify(title, message, kind = 'info') {
-    const paint = kind === 'error' ? color.red : kind === 'success' ? color.green : kind === 'warning' ? orange : violet;
+    const tone = kind === 'error' ? color.red : kind === 'success' ? color.green : kind === 'warning' ? orange : violet;
     const icon = kind === 'error' ? sym.fail : kind === 'success' ? sym.ok : kind === 'warning' ? sym.warn : sym.ai;
-    const body = String(message ?? '').split('\n').map((line) => `  ${oneLine(line, 110)}`);
-    stdout.write(`\n${card(`${icon} ${title}`, body, 'Puter Agent', paint)}\n`);
+    const body = String(message ?? '').split('\n').map((line) => `  ${line.length > 110 ? `${line.slice(0, 109)}…` : line}`);
+    stdout.write(`\n${card(`${icon} ${title}`, body, 'Puter Agent', tone)}\n`);
+    this.transcript.add('event', `${title}: ${message}`);
   }
 
   printTodos(todos = []) {
     const mark = { completed: color.green(sym.ok), in_progress: orange('◐'), pending: gray('○') };
     for (const t of todos) {
-      const text = t.status === 'completed' ? gray(t.content) : t.content;
+      const text = t.status === 'completed' ? gray(t.content) : t.status === 'in_progress' ? sBold(t.content) : t.content;
       console.log(`      ${mark[t.status] ?? '○'} ${text}`);
     }
   }
 
-  #printOutput(res) {
-    const text = redactSecrets([res.stdout, res.stderr].filter((s) => s && s.trim()).join('\n').trimEnd());
-    if (!text) return;
-    const lines = text.split(/\r?\n/);
-    const shown = lines.slice(-8);
-    if (lines.length > shown.length) console.log(gray(`      ${sym.mid} … ${lines.length - shown.length} earlier line(s)`));
-    for (const l of shown) console.log(gray(`      ${sym.mid} ${oneLine(l, 110)}`));
+  /** Print lines above the live line without the two overlapping (stop, write, resume). */
+  #print(...lines) {
+    const was = this.spinner.active;
+    this.spinner.stop();
+    for (const l of lines) console.log(l);
+    if (was && this.running) this.spinner.start(this.#liveLabel());
+  }
+
+  #liveLabel() {
+    if (this.pending > 1) return `${paint.faint('[Explore] ')}Running ${this.pending} tools in parallel`;
+    return this.currentTool ? workingLabel(this.currentTool.name, this.currentTool.args) : 'Thinking';
   }
 
   #render(event) {
+    const width = stdout.columns || 80;
     switch (event.type) {
+      case 'analysis':
+        if (this.ui.showPhases && event.kind !== 'chat') {
+          const tone = event.complexity === 'complex' ? paint.warm : event.complexity === 'moderate' ? paint.info : paint.ok;
+          console.log(`  ${paint.faint(icons.think)} ${paint.muted(`${event.kind} ${icons.sep}`)} ${tone(event.complexity)}${event.signals?.length ? paint.faint(`  (${event.signals.join(', ')})`) : ''}`);
+        }
+        break;
       case 'thinking':
         this.step = event.step;
-        this.spinner.start(event.step > 1 ? 'Thinking about the result' : 'Thinking');
-        this.spinner.update(event.step > 1 ? 'Thinking about the result' : 'Thinking');
+        this.spinner.step = event.step;
+        if (event.step > 1) this.phases.enter(this.phases.current === 'analyze' ? 'explore' : this.phases.current);
+        this.currentTool = null;
+        this.spinner.start(event.step > 1 ? 'Thinking about the results' : 'Thinking');
+        this.spinner.update(event.step > 1 ? 'Thinking about the results' : 'Thinking', '');
+        break;
+      case 'usage':
+        if (event.totals?.totalTokens) this.spinner.update(undefined, `${event.totals.totalTokens.toLocaleString()} tok`);
         break;
       case 'assistant_text':
         this.spinner.stop();
-        {
-          const rendered = renderMarkdownToTerminal(event.text.trim());
-          // color.* functions expect a string; sym.ai is already a string.
-          const th = this.theme;
-          const assistantPaint = typeof th.assistant === 'function' ? th.assistant : (s) => th.assistant ? th.assistant(s) : violet(sym.ai);
-          console.log(`\n${assistantPaint(sym.ai)} ${rendered}\n`);
-        }
+        console.log(`\n${this.#speak(event.text.trim())}\n`);
+        this.transcript.add('assistant', event.text.trim());
         break;
       case 'text_tool_calls':
         this.spinner.stop();
         console.log(gray(`  (the model wrote ${event.count} tool call(s) as text - running them anyway)`));
         break;
+      case 'protocol':
+        this.spinner.stop();
+        console.log(orange(`  ${sym.warn} this model rejected native tool calling - switched to prompt-mode tools`));
+        break;
+      case 'parallel':
+        this.pending = event.count;
+        this.parallelLeft = event.count;
+        break;
       case 'tool_call': {
         this.spinner.stop();
-        const paint = TOOL_COLOR[event.name] ?? gray;
-        this.currentTool = { name: event.name, args: summarizeArgs(event.args) };
-        console.log(`  ${paint(sym.dot)} ${color.bold(event.name)} ${gray(summarizeArgs(event.args))}`);
+        this.phases.fromTool(event.name);
+        this.currentTool = { name: event.name, args: event.args };
+        console.log(toolCallLine(event.name, event.args, { parallel: event.parallel, width }));
+        this.transcript.add('tool', `${event.name} ${argSummary(event.args, 120)}`);
         this.toolStartedAt = Date.now();
-        this.spinner.start(workingLabel(event.name, event.args));
+        this.spinner.start(this.#liveLabel());
+        this.spinner.update(this.#liveLabel(), '');
         break;
       }
       case 'tool_result': {
-        const took = fmtTime(Date.now() - this.toolStartedAt);
+        const ms = event.ms || Date.now() - this.toolStartedAt;
         this.spinner.stop();
+        if (this.pending > 0) this.pending--;
         const res = event.result;
-        if (!res.ok) {
-          console.log(color.red(`    ${sym.fail} ${oneLine(res.error, 200)}`) + gray(`  ${took}`));
-          break;
-        }
-        const body = res.result ?? {};
-        const failed = body.success === false;
-        const mark = failed ? color.red(sym.fail) : color.green(sym.ok);
-        console.log(`    ${mark} ${failed ? color.red(body.summary ?? 'failed') : (body.summary ?? 'done')}${gray(`  ${took}`)}`);
-        if (body.stdout !== undefined) this.#printOutput(body);
-        if (body.timed_out) console.log(orange(`    ${sym.warn} cancelled - the agent can see the partial output and will adapt`));
-        if (event.name === 'todo_write') this.printTodos(body.todos);
-        if (event.name === 'web_search') {
-          for (const r of (body.results ?? []).slice(0, 5)) {
-            console.log(gray(`      ${sym.mid} ${oneLine(r.title, 60)}  ${oneLine(r.url, 70)}`));
+        const inBatch = this.parallelLeft > 0;
+        if (inBatch) this.parallelLeft--;
+        console.log(toolResultLine(res, { ms, width, label: inBatch ? event.name : '' }));
+        if (res.ok) {
+          const body = res.result ?? {};
+          if (body.stdout !== undefined || body.stderr !== undefined) {
+            const text = redactSecrets([body.stdout, body.stderr].filter((x) => x && x.trim()).join('\n'));
+            for (const l of outputTail(text, { width })) console.log(l);
           }
+          if (body.timed_out) console.log(orange(`    ${sym.warn} stopped by its time limit - the agent sees the partial output and will adapt`));
+          if (event.name === 'todo_write') this.printTodos(body.todos);
+          if (event.name === 'web_search') {
+            for (const r of (body.results ?? []).slice(0, 4)) console.log(paint.faint(`      ${icons.bar} `) + paint.muted(`${String(r.title ?? '').slice(0, 60)}  `) + paint.faint(String(r.url ?? '').slice(0, 70)));
+          }
+          if (body.outline && body.chunked) console.log(paint.faint(`      ${icons.bar} large file: ${body.outline.length} definitions outlined, reading in sections`));
+        }
+        if (this.running && (this.pending > 0 || this.currentTool)) {
+          this.spinner.start(this.#liveLabel());
+          this.spinner.update(this.#liveLabel(), '');
         }
         break;
       }
+      case 'deduped':
+        this.#print(paint.faint(`      ${icons.bar} `) + paint.warn(`${icons.cache} identical to an earlier result - not sent to the model again`));
+        break;
+      case 'checkpoint':
+        this.#print(orange(`  ${sym.warn} step budget for this kind of task reached (${event.budget}) - asking the agent to re-check its plan`));
+        break;
       case 'verify_nudge':
         this.spinner.stop();
         console.log(orange(`  ${sym.warn} code changed but not run - asking the agent to verify before finishing`));
         break;
       case 'compacted':
         this.spinner.stop();
-        console.log(gray(`  ${sym.mid} long conversation: older messages were summarised`));
+        console.log(gray(`  ${sym.mid} long conversation: older messages were summarised locally (no extra model call)`));
+        break;
+      case 'context_compressed':
+        break;
+      case 'mentions':
+        console.log(gray(`  ${sym.mid} attached: ${event.files.join(', ')}`));
         break;
       case 'retry':
         this.spinner.stop();
-        console.log(
-          color.yellow(
-            `  ${sym.warn} ${event.error.kind}: ${oneLine(event.error.message, 240)} - retry ${event.attempt}/${event.retries} in ${(event.delayMs / 1000).toFixed(1)}s`,
-          ),
-        );
+        console.log(color.yellow(`  ${sym.warn} ${event.error.kind}: ${String(event.error.message ?? '').slice(0, 200)} - retry ${event.attempt}/${event.retries} in ${(event.delayMs / 1000).toFixed(1)}s`));
         break;
       default:
     }
   }
 
   #renderResult({ content, stopReason, steps, changes, usage }, elapsedMs) {
+    const width = stdout.columns || 80;
     if (stopReason === 'aborted') {
       console.log(color.yellow('\nCancelled. Type "continue" to resume, or give a new instruction.\n'));
     } else if (stopReason === 'max_steps') {
-      console.log(
-        color.yellow(`\nStopped after ${steps} steps (limit: maxSteps in config/settings.json). Type "continue" to let the agent keep going.\n`),
-      );
+      console.log(color.yellow(`\nStopped after ${steps} steps (limit: maxSteps in config/settings.json). Type "continue" to let the agent keep going.\n`));
     } else if (stopReason === 'stuck') {
-      this.notify('Agent paused', 'The same tool call failed 3 times. Give the agent a hint or a different instruction.', 'error');
+      this.notify('Agent paused', 'The agent repeated the same tool call without progress. Give it a hint or a different instruction.', 'error');
     } else {
-      const rendered = renderMarkdownToTerminal(content.trim() || '(no text reply)');
-      const th = this.theme;
-      const assistantPaint = typeof th.assistant === 'function' ? th.assistant : (s) => th.assistant ? th.assistant(s) : violet(sym.ai);
-      console.log(`\n${assistantPaint(sym.ai)} ${rendered}\n`);
-      console.log(gray(`  ${sym.ok} completed ${sym.sep} ${steps} step(s) ${sym.sep} ${fmtTime(elapsedMs)}`));
-      if (usage?.modelCalls) {
-        const tokens = Number(usage.totalTokens) || 0;
-        const cached = Number(usage.cachedTokens) || 0;
-        console.log(gray(`  usage: ${tokens.toLocaleString()} tokens (${cached.toLocaleString()} cached) ${sym.sep} ${usage.modelCalls} model call(s) ${sym.sep} ${usage.toolCalls} tool call(s)\n`));
-      } else console.log('');
+      this.phases.enter('done');
+      const text = content.trim() || '(no text reply)';
+      console.log(`\n${this.#speak(text)}\n`);
+      this.transcript.add('assistant', text);
+      if (this.ui.showPhases && steps > 1) console.log(this.phases.render());
     }
-
-    if (changes?.length) {
-      console.log(color.bold('Files touched this task:') + gray('   (/undo restores them)'));
-      const marks = { created: '+', overwritten: '!', edited: '~', deleted: '-', moved: '>', 'created-dir': '+' };
-      for (const c of changes) console.log(`  ${marks[c.action] ?? '*'} ${c.path}  ${gray(`(${c.action})`)}`);
-      console.log('');
+    if (this.ui.statusBar) {
+      const info = this.agent.contextInfo();
+      console.log(statusBar({ usage: usage ?? {}, context: { tokens: info.tokens, percent: info.tokenPercent }, cache: info.cache, elapsedMs, steps, width }));
     }
+    console.log('');
+    const panel = changesPanel(changes);
+    if (panel.length) console.log(`${panel.join('\n')}\n`);
   }
 
   #renderError(err) {

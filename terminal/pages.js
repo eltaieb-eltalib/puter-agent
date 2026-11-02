@@ -9,10 +9,10 @@ const red = fg(203);
 const yellow = fg(221);
 
 const GROUPS = {
-  Session: ['clear', 'resume', 'compact', 'export', 'undo', 'rewind', 'init', 'todos', 'exit'],
+  Session: ['clear', 'resume', 'history', 'compact', 'export', 'undo', 'rewind', 'init', 'todos', 'exit'],
   'Model & provider': ['model', 'models', 'connect', 'thinking', 'reasoning-mode'],
-  'Safety & access': ['mode', 'plan', 'build', 'access', 'permissions', 'hooks'],
-  'Look around': ['context', 'diff', 'tools', 'mcp', 'memory', 'search', 'workspace'],
+  'Safety & access': ['mode', 'plan', 'build', 'access', 'permissions', 'audit', 'hooks'],
+  'Look around': ['context', 'stats', 'cache', 'index', 'diff', 'tools', 'mcp', 'memory', 'search', 'workspace'],
   Interface: ['menu', 'help'],
 };
 
@@ -68,6 +68,7 @@ export function helpLines(commands, workspace) {
 export const helpPage = (ui, commands) => page(ui, 'Help', helpLines(commands, ui.agent.guard.root), 'commands & shortcuts');
 
 export function contextSections(c) {
+  c = { ...c, session: { promptTokens: 0, completionTokens: 0, cachedTokens: 0, totalTokens: 0, modelCalls: 0, toolCalls: 0, cachedToolCalls: 0, dedupedResults: 0, latencyMs: 0, tasks: 0, ...(c.session ?? {}) } };
   const pct = Math.min(100, c.percent);
   const used = c.chars.toLocaleString();
   return [
@@ -92,12 +93,32 @@ export function contextSections(c) {
       heading: 'This session',
       rows: [
         ['Requests', `${c.session.tasks}`],
-        ['Tokens', `${c.session.totalTokens.toLocaleString()} ${dim(`(${c.session.cachedTokens.toLocaleString()} cached)`)}`],
-        ['Calls', `${c.session.modelCalls} model · ${c.session.toolCalls} tool`],
-        ['Tools offered', `${c.tools} registered ${dim('(only the ones a request needs are sent)')}`],
+        ['Tokens', `${c.session.totalTokens.toLocaleString()} ${dim(`(${c.session.promptTokens.toLocaleString()} in · ${c.session.completionTokens.toLocaleString()} out · ${c.session.cachedTokens.toLocaleString()} from provider cache)`)}`],
+        ['Calls', `${c.session.modelCalls} model · ${c.session.toolCalls} tool${c.session.modelCalls ? dim(` · avg ${Math.round(c.session.latencyMs / c.session.modelCalls)} ms per model call`) : ''}`],
+        ['Saved', `${c.session.cachedToolCalls} tool result(s) from cache · ${c.session.dedupedResults} duplicate result(s) not resent`],
+        ['Tools offered', `${c.offeredTools ?? '?'} of ${c.tools} registered ${dim('(only needed groups; the set is kept stable for prompt caching)')}`],
       ],
     },
+    ...(c.cache ? cacheSections(c.cache) : []),
   ];
+}
+
+const mb = (b) => (b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.round(b / 1024)} KB`);
+
+/** Rows for the three local caches (files / tools / model). */
+export function cacheSections(cache) {
+  const row = (x) => [x.name, `${x.entries} item(s) · ${mb(x.bytes)} of ${mb(x.maxBytes)} · ${green(`${x.hits} hit`)} / ${x.misses} miss${x.hits + x.misses ? dim(` (${Math.round(x.hitRate * 100)}%)`) : ''}${x.evictions ? dim(` · ${x.evictions} evicted`) : ''}`];
+  return [
+    {
+      heading: `Local caches${cache.enabled ? '' : ' (disabled)'}`,
+      rows: [row(cache.files), row(cache.tools), row(cache.model), ['generation', `${cache.generation} ${dim('(bumps on every write/command; older tool results are not reused)')}`]],
+    },
+  ];
+}
+
+export function printCache(ui) {
+  const c = ui.agent.contextInfo().cache;
+  printPanel('Cache', cacheSections(c), { hint: '/cache clear [files|tools|model]  ·  provider prompt caching is separate (see /context)' });
 }
 
 export function printContext(ui) {
