@@ -6,7 +6,7 @@
 
 const WRITE_TOOLS = new Set(['create_file', 'edit_file', 'multi_edit', 'delete_file', 'move_file', 'create_directory']);
 const RUN_TOOLS = new Set(['run_command', 'run_node', 'run_python']);
-const READ_TOOLS = new Set(['read_file', 'list_files', 'search_files', 'glob', 'find_symbol', 'project_overview', 'changed_files', 'read_zip']);
+const READ_TOOLS = new Set(['read_file', 'list_files', 'search_files', 'glob', 'find_symbol', 'project_overview', 'changed_files', 'read_zip', 'file_relations']);
 const WEB_TOOLS = new Set(['web_search', 'web_fetch']);
 
 const MAX_ITEMS = 40;

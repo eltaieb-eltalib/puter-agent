@@ -26,22 +26,24 @@ const TOOL_GROUPS = {
   memory: ['memory_read', 'memory_write', 'memory_forget'],
   task: ['todo_read', 'todo_write', 'ask_user'],
   image: ['image_describe'],
-  project: ['project_overview', 'find_symbol', 'changed_files', 'read_zip'],
+  project: ['project_overview', 'find_symbol', 'file_relations', 'changed_files', 'read_zip'],
 };
 
 function selectTools(text, mode, settings) {
   if (settings.optimization?.dynamicTools === false) return null;
   const value = String(text ?? '').toLowerCase();
-  const names = new Set([...TOOL_GROUPS.files, ...TOOL_GROUPS.memory, ...TOOL_GROUPS.task, ...TOOL_GROUPS.project]);
+  const names = new Set([...TOOL_GROUPS.files, ...TOOL_GROUPS.memory, ...TOOL_GROUPS.task]);
   const research = /\b(search|research|latest|news|weather|price|online|internet|web)\b|ابحث|بحث|الانترنت|الويب|احدث|آخر|اخبار|سعر|طقس/.test(value);
   const needsTerminal = /\b(run|execute|install|test|build|compile|terminal|command|npm|node|python|git|fix|edit|implement|refactor|debug|change|update|create|write)\b|شغل|نفذ|اختبر|ثبت|ابن|بناء|امر|طرفية|عدل|تعديل|اصلح|أصلح|نفذ|برمج|حدث|تحديث|اكتب|انشئ|أنشئ/.test(value);
   const needsOpen = /\b(open|launch|start|show|desktop|downloads|documents|drive|folder|system)\b|افتح|فتح|شغل|سطح المكتب|التنزيلات|المستندات|قرص|درايف|مجلد|النظام/.test(value);
+  const needsProject = needsTerminal || /\b(project|code|codebase|repo|function|class|module|symbol|import|zip|archive|where is|defined|depend|changed)\b|\.zip\b|مشروع|المشروع|كود|الكود|دالة|دوال|كلاس|ملف مضغوط|zip|اين|أين|تعريف|تغير/.test(value);
   const needsImage = /\b(image|picture|photo|screenshot)\b|صورة|صوره|لقطة/.test(value);
   if (research) for (const name of TOOL_GROUPS.web) names.add(name);
   if (mode !== 'plan' && needsTerminal) for (const name of TOOL_GROUPS.terminal) names.add(name);
   if (mode !== 'plan' && (needsOpen || needsTerminal)) for (const name of TOOL_GROUPS.system) names.add(name);
   if (mode !== 'plan' || research) for (const name of TOOL_GROUPS.delegate) names.add(name);
   if (needsImage) for (const name of TOOL_GROUPS.image) names.add(name);
+  if (needsProject) for (const name of TOOL_GROUPS.project) names.add(name);
   return [...names];
 }
 export const MODES = ['build', 'plan'];
