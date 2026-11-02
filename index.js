@@ -85,9 +85,12 @@ async function main() {
   const agent = new Agent({ provider, registry, settings, guard, permissions, model: settings.model, mode: settings.mode });
   if (jsonMode) {
     // Scriptable run: no UI, nothing is asked (approvals are denied unless --access full / settings allow them).
+    // SIGINT/SIGTERM cancel the request cleanly: the loop stops, history stays valid, JSON is still printed.
+    const abort = new AbortController();
+    for (const sig of ['SIGINT', 'SIGTERM']) process.once(sig, () => abort.abort());
     try {
-      const res = await agent.run(cli.prompt, {});
-      console.log(JSON.stringify({ result: res.content, stop_reason: res.stopReason, steps: res.steps, usage: res.usage, changes: res.changes, is_error: res.stopReason !== 'done' }));
+      const res = await agent.run(cli.prompt, { signal: abort.signal });
+      console.log(JSON.stringify({ result: res.content, stop_reason: res.stopReason, steps: res.steps, usage: res.usage, changes: res.changes, elapsed_ms: res.elapsedMs, cache: agent.cache.stats().total, is_error: res.stopReason !== 'done' }));
       process.exit(res.stopReason === 'done' ? 0 : 1);
     } catch (err) {
       console.log(JSON.stringify({ result: '', is_error: true, error: explainError(err) }));
