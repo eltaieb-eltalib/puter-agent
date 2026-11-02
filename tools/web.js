@@ -317,8 +317,9 @@ export async function runSearch(query, ctx, { max } = {}) {
 const webSearchTool = {
   name: 'web_search',
   readOnly: true,
+  cache: 'web',
   description:
-    'Search the internet and return a list of results (title, url, snippet). Use it for anything current, factual, or unknown to you: lyrics, news, documentation, library versions, people, places, prices. Snippets are short: follow up with web_fetch on the best 1-3 URLs to read the real content. Keep queries short and specific; try an Arabic and an English phrasing when the first one finds nothing.',
+    'Search the web; returns title/url/snippet. For anything current, factual or unknown (news, docs, versions, people, prices). Then web_fetch the best 1-3 urls. Short specific queries; try another language/wording if empty.',
   parameters: {
     type: 'object',
     properties: {
@@ -343,8 +344,9 @@ const webSearchTool = {
 const webFetchTool = {
   name: 'web_fetch',
   readOnly: true,
+  cache: 'web',
   description:
-    'Download a web page (http/https) and return its readable text (HTML is converted to plain text; JSON and text are returned as is). Use it after web_search to read a result in full. For long pages use start to continue from next_start.',
+    'Fetch an http(s) page as readable text (HTML -> text). For long pages continue with start=next_start.',
   parameters: {
     type: 'object',
     properties: {

@@ -84,7 +84,8 @@ describe('Agent runs the routed search before the first model call', () => {
     assert.deepEqual(seen.map((m) => m.role), ['system', 'user', 'assistant', 'tool']);
     assert.equal(seen[2].tool_calls[0].id, seen[3].tool_call_id);
     assert.match(seen[3].content, /example\.org/);
-    assert.deepEqual(events.slice(0, 2), ['tool_call', 'tool_result']);
+    // the search runs (and finishes) before the first model call
+    assert.deepEqual(events.filter((t) => t.startsWith('tool_') || t === 'thinking').slice(0, 3), ['tool_call', 'tool_result', 'thinking']);
     await env.cleanup();
   });
 

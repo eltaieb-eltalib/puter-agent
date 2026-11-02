@@ -52,3 +52,28 @@ export function resultHint(name, result) {
   }
   return null;
 }
+
+/**
+ * Diagnose a FAILED tool call so the model fixes the cause instead of retrying blindly.
+ * Returns a short hint or null. Pure string inspection, no model call.
+ */
+export function failureHint(name, args = {}, result = {}) {
+  const body = result?.result ?? {};
+  const failedRun = result?.ok && ['run_command', 'run_node', 'run_python'].includes(name) && body.exit_code !== 0 && body.exit_code !== undefined;
+  if (result?.ok && !failedRun) return null;
+  const text = `${result?.error ?? ''}\n${body.stderr ?? ''}\n${body.stdout ?? ''}`.slice(-4000);
+  if (body.timed_out) return 'Diagnosis: killed by the time limit. Use a bounded/faster variant (e.g. a single test file, --run, no watch mode) rather than the same command.';
+  if (/old_string.*not found|was not found in|no match/i.test(text)) return 'Diagnosis: the text to replace is not in the file (it changed or differs in whitespace). Re-read the exact lines with read_file (start_line/end_line) and copy them exactly.';
+  if (/found \d+ times|matches \d+ places|is not unique|multiple (?:matches|occurrences)/i.test(text)) return 'Diagnosis: old_string matches several places. Include more surrounding lines so it is unique, or set replace_all if every occurrence should change.';
+  if (/ENOENT|no such file|cannot find (?:the )?(?:path|file)|not found:? .*\.\w+/i.test(text) && !/command not found|is not recognized/i.test(text))
+    return 'Diagnosis: a path does not exist. Locate it first with glob or list_files (check spelling, folder and extension) before retrying.';
+  if (/EACCES|EPERM|permission denied|access is denied/i.test(text)) return 'Diagnosis: permission problem. Do not retry the same call; use a path inside the workspace or explain to the user what access is needed.';
+  if (/command not found|is not recognized as an internal or external command|not recognized as the name/i.test(text))
+    return 'Diagnosis: the program is not installed or not on PATH. Check with a version command or use an available alternative (node/python script).';
+  if (/SyntaxError|Unexpected token|IndentationError|ParseError/i.test(text)) return 'Diagnosis: syntax error. Read the reported file:line, fix that exact spot, then run the same check again.';
+  if (/Cannot find module|ModuleNotFoundError|ERR_MODULE_NOT_FOUND|No module named/i.test(text)) return 'Diagnosis: a module/import is missing. Check the import path and package.json/requirements before installing anything.';
+  if (/AssertionError|expected .* (?:to|but)|\bFAIL(?:ED)?\b|failing/i.test(text)) return 'Diagnosis: a test assertion failed. Compare expected vs actual in the output and fix the code (not the test) unless the test is wrong.';
+  if (/denied this action|did not allow it/i.test(text)) return 'The user refused this. Respect it: do not retry the same action; choose another approach or ask what they prefer.';
+  if (/ETIMEDOUT|ECONNRESET|ENOTFOUND|EAI_AGAIN|fetch failed|network/i.test(text)) return 'Diagnosis: network problem. Retry at most once, or use another source.';
+  return null;
+}

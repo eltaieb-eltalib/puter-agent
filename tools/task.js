@@ -9,14 +9,15 @@ const EXCLUDED = new Set(['task', 'ask_user', 'todo_write', 'todo_read', 'memory
 const taskTool = {
   name: 'task',
   readOnly: true,
+  cache: 'workspace',
   description:
-    'Delegate a self-contained research job to a sub-agent with its own clean context (like opencode\'s "explore" agent). The sub-agent can read, search and browse but cannot change anything, and returns a written report. Use it for broad questions ("find where X is handled and summarise", "compare these 3 modules") so your own context stays small. Give it a complete prompt: it does not see this conversation.',
+    'Delegate a self-contained read-only research job to a sub-agent with a clean context; returns a report. Use for broad questions so your context stays small. The prompt must be complete: it does not see this chat.',
   parameters: {
     type: 'object',
     properties: {
       description: { type: 'string', description: 'Short title (3-6 words).' },
-      prompt: { type: 'string', description: 'Full instructions and the exact question to answer. State what the report must contain.' },
-      agent: { type: 'string', description: 'Optional: name of a custom sub-agent listed in the system prompt (its role instructions are added). Default: general explorer.' },
+      prompt: { type: 'string', description: 'Full instructions, the exact question and what the report must contain.' },
+      agent: { type: 'string', description: 'Custom sub-agent name from the system prompt (optional).' },
     },
     required: ['description', 'prompt'],
   },

@@ -142,17 +142,21 @@ export function finish(res) {
   return out;
 }
 
+const TIMEOUT_DESC = 'Hard limit in ms: expected time + margin (checks 10000-20000, installs/builds 120000-300000; max 600000).';
+const IDLE_DESC = 'Kill after this many ms with no output (default 30000; 0 = off).';
+const CWD_DESC = 'Working dir (workspace-relative or absolute). Default: workspace.';
+
 const runCommandTool = {
   name: 'run_command',
   description:
-    'Run a shell command (cmd.exe on Windows, sh elsewhere) and return its output. cwd defaults to the workspace; an absolute cwd anywhere on the system is allowed (subject to the access level). The user is shown the exact command and must approve it. Use it for things like "node --check file.js" or "npm test". Interactive programs cannot be used (no stdin).',
+    'Run a shell command (cmd.exe on Windows, sh elsewhere); returns exit_code/stdout/stderr. The user sees and approves the exact command. No stdin: never start servers, watchers or interactive programs.',
   parameters: {
     type: 'object',
     properties: {
       command: { type: 'string', description: 'The full command line.' },
-      cwd: { type: 'string', description: 'Working directory: relative to the workspace, or an absolute path anywhere on the system. Default ".".' },
-      timeout_ms: { type: 'integer', description: 'Hard time limit in ms. Set it to what the command SHOULD take plus a margin (quick checks 10000-20000, installs/builds 120000-300000). The command is killed when it is exceeded. Max 600000.' },
-      idle_timeout_ms: { type: 'integer', description: 'Kill the command if it prints nothing for this many ms (default 30000; 0 disables).' },
+      cwd: { type: 'string', description: CWD_DESC },
+      timeout_ms: { type: 'integer', description: TIMEOUT_DESC },
+      idle_timeout_ms: { type: 'integer', description: IDLE_DESC },
     },
     required: ['command'],
   },
@@ -178,15 +182,15 @@ const runCommandTool = {
 const runNodeTool = {
   name: 'run_node',
   description:
-    'Run a JavaScript file with Node.js (no shell) from the workspace root and return its output. The user must approve it because it executes code.',
+    'Run a JavaScript file with Node.js (no shell); returns its output. Needs user approval.',
   parameters: {
     type: 'object',
     properties: {
       file: { type: 'string', description: 'Script path, relative to the workspace root.' },
-      args: { type: 'array', items: { type: 'string' }, description: 'Command-line arguments (strings).' },
-      cwd: { type: 'string', description: 'Working directory (relative to the workspace, or an absolute path anywhere on the system). Default: workspace root.' },
-      timeout_ms: { type: 'integer', description: 'Hard time limit in ms. Set it to what the command SHOULD take plus a margin (quick checks 10000-20000, installs/builds 120000-300000). The command is killed when it is exceeded. Max 600000.' },
-      idle_timeout_ms: { type: 'integer', description: 'Kill the command if it prints nothing for this many ms (default 30000; 0 disables).' },
+      args: { type: 'array', items: { type: 'string' }, description: 'CLI arguments.' },
+      cwd: { type: 'string', description: CWD_DESC },
+      timeout_ms: { type: 'integer', description: TIMEOUT_DESC },
+      idle_timeout_ms: { type: 'integer', description: IDLE_DESC },
     },
     required: ['file'],
   },
@@ -224,15 +228,15 @@ const PY_CANDIDATES = process.platform === 'win32' ? ['python', 'py', 'python3']
 const runPythonTool = {
   name: 'run_python',
   description:
-    'Run a Python script from the workspace (no shell) and return its output. Handy for data work, scraping with urllib/requests, parsing files or quick calculations when Node.js is not the best fit. Write the script with create_file first. The user must approve it because it executes code.',
+    'Run a Python script (no shell); returns its output. Good for data work, parsing and calculations. Create the script first. Needs user approval.',
   parameters: {
     type: 'object',
     properties: {
       file: { type: 'string', description: 'Script path, relative to the workspace root.' },
-      args: { type: 'array', items: { type: 'string' }, description: 'Command-line arguments (strings).' },
-      cwd: { type: 'string', description: 'Working directory (relative to the workspace, or an absolute path anywhere on the system). Default: workspace root.' },
-      timeout_ms: { type: 'integer', description: 'Hard time limit in ms. Set it to what the command SHOULD take plus a margin (quick checks 10000-20000, installs/builds 120000-300000). The command is killed when it is exceeded. Max 600000.' },
-      idle_timeout_ms: { type: 'integer', description: 'Kill the command if it prints nothing for this many ms (default 30000; 0 disables).' },
+      args: { type: 'array', items: { type: 'string' }, description: 'CLI arguments.' },
+      cwd: { type: 'string', description: CWD_DESC },
+      timeout_ms: { type: 'integer', description: TIMEOUT_DESC },
+      idle_timeout_ms: { type: 'integer', description: IDLE_DESC },
     },
     required: ['file'],
   },

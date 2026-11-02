@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { ToolError } from '../utils/errors.js';
+import { hashText } from '../core/cache.js';
 import { isSensitivePath } from '../utils/redact.js';
 import { display, miniDiff, recordChange, requireApproval, resolvePath } from './helpers.js';
 
@@ -17,17 +18,33 @@ const exists = async (p) => {
 };
 const isBinary = (buf) => buf.subarray(0, 8000).includes(0);
 
+// Unranged reads of big files return the first chunk plus an outline of definitions (with line
+// numbers) instead of the whole file, so the model reads only the sections it actually needs.
+const CHUNK_LINES = 250;
+const CHUNK_TRIGGER_LINES = 400;
+const CHUNK_TRIGGER_CHARS = 32000;
+const OUTLINE_RE =
+  /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\*?\s+[\w$]+|class\s+[\w$]+|(?:const|let|var)\s+[\w$]+\s*=\s*(?:async\s*)?(?:\([^)]*\)|[\w$]+)\s*=>|def\s+\w+|class\s+\w+|func\s+(?:\([^)]*\)\s*)?\w+|fn\s+\w+|(?:pub\s+)?(?:struct|enum|trait|impl|interface|type)\s+\w+|#{1,3}\s+\S)/;
+
+/** "12: function foo(a, b) {" lines for the definitions in a file (max `max`). */
+export function outlineOf(lines, max = 60) {
+  const out = [];
+  for (let i = 0; i < lines.length && out.length < max; i++) {
+    if (OUTLINE_RE.test(lines[i])) out.push(`${i + 1}: ${lines[i].trim().slice(0, 100)}`);
+  }
+  return out;
+}
+
 const readFileTool = {
   name: 'read_file',
   readOnly: true,
-  description:
-    'Read a text file from the workspace. Returns its content. For big files use start_line/end_line (1-based, inclusive) to read a slice.',
+  description: 'Read a text file. Big files return the first lines + an outline; then read sections with start_line/end_line (1-based, inclusive).',
   parameters: {
     type: 'object',
     properties: {
-      path: { type: 'string', description: 'File path, relative to the workspace root.' },
-      start_line: { type: 'integer', description: 'First line to return (1-based).' },
-      end_line: { type: 'integer', description: 'Last line to return (inclusive).' },
+      path: { type: 'string', description: 'File path (workspace-relative).' },
+      start_line: { type: 'integer', description: 'First line (1-based).' },
+      end_line: { type: 'integer', description: 'Last line (inclusive).' },
     },
     required: ['path'],
   },
@@ -42,25 +59,48 @@ const readFileTool = {
     const max = ctx.settings.limits.maxReadBytes;
     const ranged = start_line !== undefined || end_line !== undefined;
     const cap = ranged ? max * 10 : max;
-    const size = Math.min(stat.size, cap);
-    const buf = Buffer.alloc(size);
-    const handle = await fs.open(abs, 'r');
-    try {
-      await handle.read(buf, 0, size, 0);
-    } finally {
-      await handle.close();
+    let file;
+    if (ctx.cache?.enabled) file = await ctx.cache.files.read(abs, { maxBytes: cap, stat });
+    else {
+      const size = Math.min(stat.size, cap);
+      const buf = Buffer.alloc(size);
+      const handle = await fs.open(abs, 'r');
+      try {
+        await handle.read(buf, 0, size, 0);
+      } finally {
+        await handle.close();
+      }
+      file = { binary: isBinary(buf), text: buf.toString('utf8'), hash: hashText(buf) };
     }
-    if (isBinary(buf)) throw new ToolError(`"${p}" looks like a binary file; refusing to read it as text.`);
+    if (file.binary) throw new ToolError(`"${p}" looks like a binary file; refusing to read it as text.`);
 
-    const text = buf.toString('utf8');
+    const text = file.text;
     const lines = text.split(/\r?\n/);
     const truncated = stat.size > cap;
+    const hash = file.hash.slice(0, 12);
+    const chunkLines = ctx.settings.limits.readChunkLines ?? CHUNK_LINES;
     if (!ranged) {
+      const big = chunkLines > 0 && (lines.length > Math.max(CHUNK_TRIGGER_LINES, chunkLines) || text.length > CHUNK_TRIGGER_CHARS);
+      if (big) {
+        return {
+          path: display(ctx, abs),
+          start_line: 1,
+          end_line: chunkLines,
+          content: lines.slice(0, chunkLines).join('\n'),
+          total_lines: lines.length,
+          chunked: true,
+          outline: outlineOf(lines),
+          hash,
+          note: `Large file: only lines 1-${chunkLines} of ${lines.length} are shown. Use the outline and read the sections you need with start_line/end_line.`,
+          summary: `lines 1-${chunkLines} of ${lines.length} (chunked)`,
+        };
+      }
       return {
         path: display(ctx, abs),
         content: text,
         total_lines: lines.length,
         truncated,
+        hash,
         ...(truncated && {
           note: `File is ${stat.size} bytes; only the first ${cap} are shown. Use start_line/end_line for a specific section.`,
         }),
@@ -76,6 +116,7 @@ const readFileTool = {
       content: lines.slice(from - 1, to).join('\n'),
       total_lines: lines.length,
       truncated,
+      hash,
       summary: `lines ${from}-${to}`,
     };
   },
@@ -224,6 +265,7 @@ const deleteFileTool = {
 const listFilesTool = {
   name: 'list_files',
   readOnly: true,
+  cache: 'workspace',
   description:
     'List files and folders in a directory (folders end with "/"). Use recursive=true to walk subfolders (node_modules and .git are skipped).',
   parameters: {
@@ -319,6 +361,7 @@ const moveFileTool = {
 const searchFilesTool = {
   name: 'search_files',
   readOnly: true,
+  cache: 'workspace',
   description:
     'Search text inside files under a directory (skips node_modules, .git, binary and very large files). Returns file, line number and the matching line.',
   parameters: {
@@ -421,6 +464,7 @@ export function globToRegExp(glob) {
 const globTool = {
   name: 'glob',
   readOnly: true,
+  cache: 'workspace',
   description:
     'Find files by name pattern, e.g. "**/*.js", "src/**/*.{ts,tsx}", "*.md". A pattern without "/" matches the file name at any depth. Returns paths (newest first). node_modules and .git are skipped. Use search_files to search file CONTENTS.',
   parameters: {

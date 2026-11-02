@@ -1,4 +1,8 @@
 // Long conversations: summarise the old part instead of silently losing it.
+// Two summarisers:
+//   local - built from the Ledger (tool evidence) + the user's requests: costs ZERO model tokens
+//   model - asks the model for a summary (better prose, costs one call; cached by request hash)
+import { hashText } from './cache.js';
 
 const SUMMARY_PROMPT =
   'You compress an agent conversation. Write a compact summary (max 350 words, same language as the user) with: the user goals, decisions made, files created/changed (with paths), commands run and their outcome, open problems, and facts the user stated. Keep exact names, paths, numbers. No filler.';
@@ -22,7 +26,7 @@ function transcript(messages, perMessage = 700) {
  * user messages with a summary (merged into the first kept user message, so the history stays valid).
  * messages[0] is the system prompt and is untouched. Returns true when something was compacted.
  */
-export async function compactHistory({ messages, provider, model, limit = 120000, keepTurns = 2, signal }) {
+export async function compactHistory({ messages, provider, model, limit = 120000, keepTurns = 2, signal, summarizer = 'model', localSummary = null, cache = null }) {
   if (totalChars(messages) <= limit) return false;
   const userIdx = [];
   messages.forEach((m, i) => i > 0 && m.role === 'user' && userIdx.push(i));
@@ -31,20 +35,36 @@ export async function compactHistory({ messages, provider, model, limit = 120000
   const old = messages.slice(1, cut);
   if (!old.length) return false;
 
-  let summary;
-  try {
-    const reply = await provider.chat({
-      model,
-      messages: [
-        { role: 'system', content: SUMMARY_PROMPT },
-        { role: 'user', content: transcript(old) },
-      ],
-      tools: [],
-      signal,
-    });
-    summary = String(reply.content ?? '').trim();
-  } catch {
-    summary = '';
+  let summary = '';
+  if (summarizer === 'local') {
+    const requests = old.filter((m) => m.role === 'user' && typeof m.content === 'string').map((m) => `- ${m.content.replace(/\s+/g, ' ').slice(0, 200)}`);
+    const replies = old.filter((m) => m.role === 'assistant' && typeof m.content === 'string' && m.content.trim() && !m.tool_calls).map((m) => `- ${m.content.replace(/\s+/g, ' ').slice(0, 240)}`);
+    summary = [
+      localSummary ? `Verified facts from tool results:\n${localSummary}` : '',
+      requests.length ? `Earlier user messages:\n${requests.slice(-8).join('\n')}` : '',
+      replies.length ? `Earlier answers:\n${replies.slice(-4).join('\n')}` : '',
+    ].filter(Boolean).join('\n').slice(0, 6000);
+  } else {
+    const body = transcript(old);
+    const key = `summary:${model}:${hashText(body)}`;
+    summary = cache?.get(key) ?? '';
+    if (!summary) {
+      try {
+        const reply = await provider.chat({
+          model,
+          messages: [
+            { role: 'system', content: SUMMARY_PROMPT },
+            { role: 'user', content: body },
+          ],
+          tools: [],
+          signal,
+        });
+        summary = String(reply.content ?? '').trim();
+        if (summary) cache?.set(key, summary);
+      } catch {
+        summary = '';
+      }
+    }
   }
   if (!summary) summary = `(automatic summary unavailable; ${old.length} older messages were dropped)\n${transcript(old, 160).slice(-3000)}`;
 

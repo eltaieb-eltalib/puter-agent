@@ -6,17 +6,17 @@ const todoWriteTool = {
   name: 'todo_write',
   readOnly: true,
   description:
-    'Create or update the task checklist for the current job. Send the COMPLETE list every time (it replaces the old one). Use it for any task with 3 or more steps: write the steps first, keep exactly one item "in_progress", and mark items "completed" as soon as they are done. Do not use it for simple questions.',
+    'Set the task checklist (send the COMPLETE list; it replaces the old one). For tasks with 3+ steps: one item in_progress, mark items completed when done. Not for simple questions.',
   parameters: {
     type: 'object',
     properties: {
       todos: {
         type: 'array',
-        description: 'Full list of items: [{ "content": "short step", "status": "pending|in_progress|completed" }]',
+        description: 'All items.',
         items: {
           type: 'object',
           properties: {
-            content: { type: 'string', description: 'Short description of the step.' },
+            content: { type: 'string', description: 'Short step.' },
             status: { type: 'string', enum: ['pending', 'in_progress', 'completed'] },
           },
           required: ['content'],
@@ -54,12 +54,12 @@ const askUserTool = {
   name: 'ask_user',
   readOnly: true,
   description:
-    'Ask the user ONE short question and wait for the typed answer. Use only when the request is truly ambiguous and a wrong guess would waste a lot of work or cause harm (for example which of two very different designs to build). Never use it for permission to run tools - the system asks for approval by itself - and never for things you can decide with a sensible default.',
+    'Ask the user ONE short question and wait for the answer. Only when truly ambiguous and a wrong guess is costly. Never for tool permission (the system asks itself) or things a sensible default settles.',
   parameters: {
     type: 'object',
     properties: {
       question: { type: 'string', description: 'The question, in the user language.' },
-      options: { type: 'array', items: { type: 'string' }, description: 'Optional list of suggested answers (strings).' },
+      options: { type: 'array', items: { type: 'string' }, description: 'Suggested answers.' },
     },
     required: ['question'],
   },
