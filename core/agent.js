@@ -18,13 +18,14 @@ const KEEP_FULL_TOOL_RESULTS = 6;
 const OLD_RESULT_LIMIT = 500;
 
 const TOOL_GROUPS = {
-  files: ['read_file', 'list_files', 'search_files', 'create_file', 'edit_file', 'delete_file', 'move_file', 'create_directory', 'list_drives', 'glob', 'multi_edit'],
+  files: ['read_file', 'list_files', 'search_files', 'create_file', 'edit_file', 'delete_file', 'move_file', 'create_directory', 'glob', 'multi_edit'],
   terminal: ['run_command', 'run_node', 'run_python'],
-  system: ['open_path'],
+  system: ['open_path', 'list_drives'],
   delegate: ['task'],
   web: ['web_search', 'web_fetch'],
   memory: ['memory_read', 'memory_write', 'memory_forget'],
-  task: ['todo_read', 'todo_write', 'ask_user'],
+  task: ['todo_write', 'ask_user'],
+  resume: ['todo_read'],
   image: ['image_describe'],
   project: ['project_overview', 'find_symbol', 'file_relations', 'changed_files', 'read_zip'],
 };
@@ -32,15 +33,22 @@ const TOOL_GROUPS = {
 function selectTools(text, mode, settings) {
   if (settings.optimization?.dynamicTools === false) return null;
   const value = String(text ?? '').toLowerCase();
-  const names = new Set([...TOOL_GROUPS.files, ...TOOL_GROUPS.memory, ...TOOL_GROUPS.task]);
+  const names = new Set([...TOOL_GROUPS.files, ...TOOL_GROUPS.task]);
+  // Rarely needed groups are only offered when the request points at them (each schema costs
+  // tokens on every model call). The sticky tool set keeps them once they were offered.
+  const needsMemory = /\b(remember|memory|memorize|forget|preference|always use|from now on)\b|تذكر|احفظ|ذاكرة|الذاكرة|انس|انسى|دائما|من الآن/.test(value);
+  const needsResume = /\b(continue|resume|todo|checklist|where were we)\b|كمل|أكمل|اكمل|تابع|استمر|المهام/.test(value);
   const research = /\b(search|research|latest|news|weather|price|online|internet|web)\b|ابحث|بحث|الانترنت|الويب|احدث|آخر|اخبار|سعر|طقس/.test(value);
   const needsTerminal = /\b(run|execute|install|test|build|compile|terminal|command|npm|node|python|git|fix|edit|implement|refactor|debug|change|update|create|write)\b|شغل|نفذ|اختبر|ثبت|ابن|بناء|امر|طرفية|عدل|تعديل|اصلح|أصلح|نفذ|برمج|حدث|تحديث|اكتب|انشئ|أنشئ/.test(value);
-  const needsOpen = /\b(open|launch|start|show|desktop|downloads|documents|drive|folder|system)\b|افتح|فتح|شغل|سطح المكتب|التنزيلات|المستندات|قرص|درايف|مجلد|النظام/.test(value);
-  const needsProject = needsTerminal || /\b(project|code|codebase|repo|function|class|module|symbol|import|zip|archive|where is|defined|depend|changed)\b|\.zip\b|مشروع|المشروع|كود|الكود|دالة|دوال|كلاس|ملف مضغوط|zip|اين|أين|تعريف|تغير/.test(value);
+  const needsOpen = /\b(open|launch|desktop|downloads|documents|drives?|disk|browser|system)\b|[a-z]:\\|افتح|فتح|سطح المكتب|التنزيلات|المستندات|قرص|درايف|المتصفح|النظام/.test(value);
+  // Project-index tools pay off when exploring/locating code, not for every edit request.
+  const needsProject = /\b(project|codebase|repo|repository|architecture|structure|overview|symbol|where is|where are|defined|definition|depend\w*|imports?|usages?|references?|callers?|zip|archive|changed since)\b|\.zip\b|مشروع|المشروع|بنية|هيكل|اين|أين|تعريف|يعتمد|الاعتماديات|ملف مضغوط|ارشيف|أرشيف/.test(value);
   const needsImage = /\b(image|picture|photo|screenshot)\b|صورة|صوره|لقطة/.test(value);
   if (research) for (const name of TOOL_GROUPS.web) names.add(name);
   if (mode !== 'plan' && needsTerminal) for (const name of TOOL_GROUPS.terminal) names.add(name);
-  if (mode !== 'plan' && (needsOpen || needsTerminal)) for (const name of TOOL_GROUPS.system) names.add(name);
+  if (needsOpen) for (const name of TOOL_GROUPS.system) if (mode !== 'plan' || name === 'list_drives') names.add(name);
+  if (needsMemory) for (const name of TOOL_GROUPS.memory) names.add(name);
+  if (needsResume) for (const name of TOOL_GROUPS.resume) names.add(name);
   if (mode !== 'plan' || research) for (const name of TOOL_GROUPS.delegate) names.add(name);
   if (needsImage) for (const name of TOOL_GROUPS.image) names.add(name);
   if (needsProject) for (const name of TOOL_GROUPS.project) names.add(name);
@@ -127,7 +135,7 @@ export class Agent {
   async #compact(signal, emit = () => {}) {
     const { compactAtChars = 120000, keepTurns = 2, summarizer = 'local' } = this.settings.context ?? {};
     try {
-      const done = await compactHistory({ messages: this.messages, provider: this.provider, model: this.model, limit: compactAtChars, keepTurns, signal, summarizer, localSummary: this.ledger.summary(), cache: this.cache.model });
+      const done = await compactHistory({ messages: this.messages, provider: this.provider, model: this.settings.models?.summary ?? this.model, limit: compactAtChars, keepTurns, signal, summarizer, localSummary: this.ledger.summary(), cache: this.cache.model, maxTokens: this.settings.tokens?.summary });
       if (done) emit({ type: 'compacted' });
     } catch {
       /* compaction is best effort */
@@ -169,7 +177,7 @@ export class Agent {
 
   /** Force-summarise the old part of the conversation now (/compact). Returns false if too short. */
   async compactNow(signal) {
-    return compactHistory({ messages: this.messages, provider: this.provider, model: this.model, limit: 0, keepTurns: 1, signal, summarizer: this.settings.context?.manualSummarizer ?? 'model', localSummary: this.ledger.summary(), cache: this.cache.model });
+    return compactHistory({ messages: this.messages, provider: this.provider, model: this.settings.models?.summary ?? this.model, limit: 0, keepTurns: 1, signal, summarizer: this.settings.context?.manualSummarizer ?? 'model', localSummary: this.ledger.summary(), cache: this.cache.model, maxTokens: this.settings.tokens?.summary });
   }
 
   /** Restore the last saved conversation of this workspace. Returns false if there is none. */
@@ -204,7 +212,11 @@ export class Agent {
     if (attached.length) emit?.({ type: 'mentions', files: attached });
 
     const planning = this.settings.planning ?? {};
-    const analysis = planning.enabled === false ? null : analyzeRequest(userText, { mode: this.mode, maxSteps: this.settings.maxSteps });
+    const analysis = planning.enabled === false ? null : analyzeRequest(userText, { mode: this.mode, maxSteps: this.settings.maxSteps, budgets: planning.budgets });
+    // Optional model tiers: a smaller/cheaper model for simple requests (only when configured).
+    const tiers = this.settings.models ?? {};
+    const runModel = analysis?.complexity === 'simple' && tiers.simple ? tiers.simple : this.model;
+    if (runModel !== this.model) emit?.({ type: 'model_tier', model: runModel, reason: 'simple request' });
     this.lastAnalysis = analysis;
     if (analysis) emit?.({ type: 'analysis', ...analysis });
     const frame = analysis && planning.taskFrame !== false ? taskFrame(analysis) : '';
@@ -223,7 +235,7 @@ export class Agent {
       mode: this.mode,
       hooks: this.hooks,
       provider: this.provider,
-      model: this.model,
+      model: runModel,
       registry: this.registry,
       depth: 0,
       state: this.state,
@@ -236,7 +248,7 @@ export class Agent {
       await this.#autoSearch(userText, ctx, emit);
       const result = await runAgentLoop({
         provider: this.provider,
-        model: this.model,
+        model: runModel,
         messages: this.messages,
         registry: this.registry,
         ctx,
@@ -250,6 +262,7 @@ export class Agent {
         protocol: this.settings.tools?.protocol ?? 'auto',
         analysis,
         ledger: this.ledger,
+        maxTokens: this.settings.tokens?.maxOutput ?? undefined,
         signal,
         emit,
       });

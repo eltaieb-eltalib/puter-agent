@@ -265,7 +265,7 @@ export class GeminiProvider {
   }
 
   /** One model turn. Returns { content, toolCalls, message }; throws a classified AgentError. */
-  async chat({ model, messages, tools = [], signal } = {}) {
+  async chat({ model, messages, tools = [], signal, maxTokens } = {}) {
     // The SDK only listens for a *future* abort event, so an already-cancelled request must be stopped here.
     if (signal?.aborted) throw new AgentError('Request cancelled.', { kind: ErrorKind.ABORTED });
     const sdk = await this.#client();
@@ -277,12 +277,13 @@ export class GeminiProvider {
     const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
 
     const callOnce = async () => {
-      const generationConfig = modern
+      let generationConfig = modern
         ? // Gemini 3+ is tuned for its default temperature; lowering it can cause loops.
           this.thinkingLevel
           ? { thinkingConfig: { thinkingLevel: this.thinkingLevel } }
           : undefined
         : { temperature: 0.2 };
+      if (maxTokens) generationConfig = { ...(generationConfig ?? {}), maxOutputTokens: maxTokens };
       const genModel = sdk.getGenerativeModel(
         { model: modelId, systemInstruction, tools: toGeminiTools(tools), ...(generationConfig && { generationConfig }) },
         this.#baseUrl ? { baseUrl: this.#baseUrl } : undefined,

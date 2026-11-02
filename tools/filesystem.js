@@ -82,17 +82,25 @@ const readFileTool = {
     if (!ranged) {
       const big = chunkLines > 0 && (lines.length > Math.max(CHUNK_TRIGGER_LINES, chunkLines) || text.length > CHUNK_TRIGGER_CHARS);
       if (big) {
+        // The chunk must fit in the tool-result budget together with the outline, or the outline
+        // (the part that tells the model where to look) would be cut off.
+        const outline = outlineOf(lines);
+        const budget = Math.max(2000, Math.floor((ctx.settings.limits.maxToolResultChars ?? 20000) * 0.85) - outline.join('\n').length - 600);
+        let end = 0;
+        let used = 0;
+        while (end < Math.min(chunkLines, lines.length) && used + lines[end].length + 1 <= budget) used += lines[end++].length + 1;
+        end = Math.max(1, end);
         return {
           path: display(ctx, abs),
-          start_line: 1,
-          end_line: chunkLines,
-          content: lines.slice(0, chunkLines).join('\n'),
           total_lines: lines.length,
           chunked: true,
-          outline: outlineOf(lines),
+          note: `Large file: lines 1-${end} of ${lines.length} shown. Use the outline (line numbers) and read the sections you need with start_line/end_line.`,
+          outline,
           hash,
-          note: `Large file: only lines 1-${chunkLines} of ${lines.length} are shown. Use the outline and read the sections you need with start_line/end_line.`,
-          summary: `lines 1-${chunkLines} of ${lines.length} (chunked)`,
+          start_line: 1,
+          end_line: end,
+          content: lines.slice(0, end).join('\n'),
+          summary: `lines 1-${end} of ${lines.length} (chunked)`,
         };
       }
       return {

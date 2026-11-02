@@ -26,7 +26,7 @@ function transcript(messages, perMessage = 700) {
  * user messages with a summary (merged into the first kept user message, so the history stays valid).
  * messages[0] is the system prompt and is untouched. Returns true when something was compacted.
  */
-export async function compactHistory({ messages, provider, model, limit = 120000, keepTurns = 2, signal, summarizer = 'model', localSummary = null, cache = null }) {
+export async function compactHistory({ messages, provider, model, limit = 120000, keepTurns = 2, signal, summarizer = 'model', localSummary = null, cache = null, maxTokens = 700 }) {
   if (totalChars(messages) <= limit) return false;
   const userIdx = [];
   messages.forEach((m, i) => i > 0 && m.role === 'user' && userIdx.push(i));
@@ -58,6 +58,7 @@ export async function compactHistory({ messages, provider, model, limit = 120000
           ],
           tools: [],
           signal,
+          maxTokens,
         });
         summary = String(reply.content ?? '').trim();
         if (summary) cache?.set(key, summary);

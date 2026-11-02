@@ -74,6 +74,7 @@ export async function runAgentLoop({
   protocol: protocolName = 'native',
   analysis = null, // from planner.analyzeRequest: enables the soft-budget checkpoint
   ledger = null,
+  maxTokens = undefined, // output-token cap per model call (providers that support it)
 }) {
   const defs = registry.definitions({ readOnly: ctx?.mode === 'plan', include: toolNames });
   let protocol = createProtocol(protocolName === 'auto' ? 'native' : protocolName);
@@ -103,14 +104,14 @@ export async function runAgentLoop({
         async () => {
           const req = protocol.request(messages, defs);
           try {
-            return await provider.chat({ model, messages: req.messages, tools: req.tools, responseFormat: req.responseFormat, signal, onDelta: ctx?.onDelta });
+            return await provider.chat({ model, messages: req.messages, tools: req.tools, responseFormat: req.responseFormat, signal, onDelta: ctx?.onDelta, maxTokens });
           } catch (err) {
             // Model/endpoint without native tools: switch this run to prompt-mode tools and retry at once.
             if (protocol.name === 'native' && defs.length && protocolName === 'auto' && isToolsUnsupported(err)) {
               protocol = createProtocol('prompt');
               emit({ type: 'protocol', name: 'prompt' });
               const again = protocol.request(messages, defs);
-              return provider.chat({ model, messages: again.messages, tools: again.tools, signal, onDelta: ctx?.onDelta });
+              return provider.chat({ model, messages: again.messages, tools: again.tools, signal, onDelta: ctx?.onDelta, maxTokens });
             }
             throw err;
           }

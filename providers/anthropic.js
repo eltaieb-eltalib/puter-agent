@@ -91,9 +91,9 @@ export class AnthropicProvider {
     return ['claude-sonnet-4-5', 'claude-opus-4-1', 'claude-haiku-4-5'].map((id) => ({ id, provider: this.name }));
   }
 
-  async chat({ model = 'claude-sonnet-4-5', messages = [], tools = [], signal } = {}) {
+  async chat({ model = 'claude-sonnet-4-5', messages = [], tools = [], signal, maxTokens } = {}) {
     if (signal?.aborted) throw new AgentError('Request cancelled.', { kind: ErrorKind.ABORTED });
-    const body = toAnthropicRequest({ model, messages, tools, promptCaching: this.promptCaching });
+    const body = toAnthropicRequest({ model, messages, tools, promptCaching: this.promptCaching, ...(maxTokens ? { maxTokens } : {}) });
     const timeout = AbortSignal.timeout(this.timeoutMs);
     const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
     try {

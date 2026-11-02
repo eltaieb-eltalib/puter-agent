@@ -35,7 +35,7 @@ function countItems(text) {
  * Analyse a request. Pure function: same input -> same output.
  * Returns { kind, complexity, goal, signals, needsPlan, softBudget }.
  */
-export function analyzeRequest(text, { mode = 'build', maxSteps = 60 } = {}) {
+export function analyzeRequest(text, { mode = 'build', maxSteps = 60, budgets: custom = {} } = {}) {
   const raw = String(text ?? '').trim();
   const t = normalizeArabic(raw);
   const signals = [];
@@ -67,7 +67,7 @@ export function analyzeRequest(text, { mode = 'build', maxSteps = 60 } = {}) {
   const complexity = score >= 3 ? 'complex' : score >= 1 ? 'moderate' : 'simple';
   const firstSentence = raw.split(/(?<=[.!?؟])\s|\n/)[0] ?? raw;
   const goal = firstSentence.length > 160 ? `${firstSentence.slice(0, 159)}…` : firstSentence;
-  const budgets = { simple: 8, moderate: 20, complex: Math.max(30, Math.round(maxSteps * 0.75)) };
+  const budgets = { simple: 8, moderate: 20, complex: Math.max(30, Math.round(maxSteps * 0.75)), ...custom };
   return {
     kind,
     complexity,

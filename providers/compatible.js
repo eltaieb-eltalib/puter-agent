@@ -30,7 +30,7 @@ export class CompatibleProvider {
     } catch { /* Some gateways disable model discovery; curated defaults remain selectable. */ }
     return (PROVIDER_PRESETS[this.name]?.models ?? [this.defaultModel]).map(id => ({ id, provider: this.name }));
   }
-  async chat({ model, messages = [], tools = [], signal, responseFormat, onDelta } = {}) {
+  async chat({ model, messages = [], tools = [], signal, responseFormat, onDelta, maxTokens } = {}) {
     if (signal?.aborted) throw new AgentError('Request cancelled.', { kind: ErrorKind.ABORTED });
     const timeout = AbortSignal.timeout(this.timeoutMs);
     const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
@@ -43,6 +43,7 @@ export class CompatibleProvider {
       })),
       ...(tools.length ? { tools: tools.filter(t => t?.type === 'function').map(t => ({ type: 'function', function: t.function })) } : {}),
       ...(responseFormat === 'json' ? { response_format: { type: 'json_object' } } : {}),
+      ...(maxTokens ? { max_tokens: maxTokens } : {}),
     };
     try {
       if (onDelta && this.stream !== false) {

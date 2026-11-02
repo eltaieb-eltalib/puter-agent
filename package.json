@@ -10,7 +10,8 @@
   "scripts": {
     "start": "node index.js",
     "test": "node --test",
-    "eval": "node evals/run.js"
+    "eval": "node evals/run.js",
+    "bench": "node evals/token-bench.js"
   },
   "engines": {
     "node": ">=20.3.0"

@@ -65,7 +65,13 @@ export const DEFAULTS = Object.freeze({
   // maxTokens: context size used for the % shown in the status bar and /context.
   context: { compactAtChars: 120000, keepTurns: 2, summarizer: 'local', manualSummarizer: 'model', maxTokens: 32000 },
   // Local request analysis (no model call): task frame + soft step budget with one checkpoint note.
-  planning: { enabled: true, taskFrame: true },
+  // budgets = soft step budget per complexity (the hard limit stays maxSteps).
+  planning: { enabled: true, taskFrame: true, budgets: { simple: 8, moderate: 20 }, subagentMaxSteps: 20 },
+  // Optional model tiers (null = use the main model): simple = simple requests, summary = /compact
+  // summaries, subagent = the task tool. Use a smaller/cheaper model of the same provider.
+  models: { simple: null, summary: null, subagent: null },
+  // Output-token caps per model call (null = provider default): main loop, summaries, sub-agents.
+  tokens: { maxOutput: null, summary: 700, subagent: null },
   // Tool calling protocol: auto (native, falls back to prompt mode if the model rejects tools) |
   // native | json | prompt.
   tools: { protocol: 'auto' },

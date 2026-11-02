@@ -35,11 +35,13 @@ const taskTool = {
     const subCtx = { ...ctx, mode: 'plan', depth: (ctx.depth ?? 0) + 1, changes: [], checkpoint: undefined, ask: undefined };
     const res = await runAgentLoop({
       provider: ctx.provider,
-      model: ctx.model,
+      model: ctx.settings.models?.subagent ?? ctx.model,
       messages,
       registry: ctx.registry,
       ctx: subCtx,
-      maxSteps: MAX_SUB_STEPS,
+      maxSteps: ctx.settings.planning?.subagentMaxSteps ?? MAX_SUB_STEPS,
+      protocol: ctx.settings.tools?.protocol ?? 'auto',
+      maxTokens: ctx.settings.tokens?.subagent ?? ctx.settings.tokens?.maxOutput ?? undefined,
       retry: ctx.settings.retry,
       maxResultChars: ctx.settings.limits.maxToolResultChars,
       toolNames: names,

@@ -413,3 +413,20 @@ describe('permissions', () => {
     assert.equal(p.isDenied('runCommand'), false);
   });
 });
+
+describe('model tiers and token caps', () => {
+  test('simple requests use models.simple; output cap reaches the provider', async () => {
+    const env = await makeEnv();
+    try {
+      const seen = [];
+      const provider = { async chat({ model, maxTokens }) { seen.push({ model, maxTokens }); return textReply('ok'); } };
+      const settings = { ...DEFAULTS, retry: { retries: 0 }, models: { simple: 'small-model' }, tokens: { maxOutput: 1234 } };
+      const agent = new Agent({ provider, registry: env.registry, settings, guard: env.guard, permissions: env.permissions, model: 'big-model' });
+      await agent.run('fix the typo in README.md');
+      await agent.run('Refactor the whole project:\n- split agent.js\n- add tests\n- update README.md\n- then run all tests');
+      assert.deepEqual(seen, [{ model: 'small-model', maxTokens: 1234 }, { model: 'big-model', maxTokens: 1234 }]);
+    } finally {
+      await env.cleanup();
+    }
+  });
+});

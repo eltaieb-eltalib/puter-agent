@@ -514,6 +514,9 @@ export class TerminalUI {
         break;
       case 'context_compressed':
         break;
+      case 'model_tier':
+        console.log(paint.faint(`  ${icons.think} using ${event.model} (${event.reason})`));
+        break;
       case 'mentions':
         console.log(gray(`  ${sym.mid} attached: ${event.files.join(', ')}`));
         break;

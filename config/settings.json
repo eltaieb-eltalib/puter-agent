@@ -82,7 +82,12 @@
   },
   "planning": {
     "enabled": true,
-    "taskFrame": true
+    "taskFrame": true,
+    "budgets": {
+      "simple": 8,
+      "moderate": 20
+    },
+    "subagentMaxSteps": 20
   },
   "tools": {
     "protocol": "auto"
@@ -111,5 +116,15 @@
     "statusBar": true,
     "showPhases": true,
     "codeHighlight": true
+  },
+  "models": {
+    "simple": null,
+    "summary": null,
+    "subagent": null
+  },
+  "tokens": {
+    "maxOutput": null,
+    "summary": 700,
+    "subagent": null
   }
 }
