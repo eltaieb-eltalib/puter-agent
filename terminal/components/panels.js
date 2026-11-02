@@ -76,13 +76,17 @@ export class PhaseTracker {
     return this.enter(phaseOf(name));
   }
 
-  render() {
+  /** Full labels when they fit; on narrow screens only visited phases are named. */
+  render(width = cols()) {
     const parts = PHASES.map(([k, label]) => {
       if (k === this.current) return paint.accent(bold(`${icons.dot} ${label}`));
       if (this.visited.has(k)) return paint.ok(`${icons.ok} ${label}`);
       return paint.faint(`${icons.ring} ${label}`);
     });
-    return `  ${parts.join(paint.faint(` ${icons.thin} `))}`;
+    const full = `  ${parts.join(paint.faint(` ${icons.thin} `))}`;
+    if (stringWidth(full) < width) return full;
+    const short = PHASES.filter(([k]) => this.visited.has(k) || k === this.current).map(([k, label]) => (k === this.current ? paint.accent(bold(label)) : paint.ok(label)));
+    return clipCells(`  ${short.join(paint.faint(' › '))}`, width - 1);
   }
 }
 

@@ -237,6 +237,7 @@ const editFileTool = {
     recordChange(ctx, 'edited', abs);
     return {
       path: display(ctx, abs),
+      start_line: text.slice(0, text.indexOf(oldText)).split('\n').length, // first changed line (1-based)
       replacements,
       summary: `edited (${replacements} replacement${replacements === 1 ? '' : 's'})`,
     };

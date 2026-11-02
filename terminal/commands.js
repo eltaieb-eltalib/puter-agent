@@ -643,6 +643,27 @@ export const COMMANDS = {
       await page(ui, 'History', lines, `${ui.transcript?.size ?? 0} entries · ↑/↓ PgUp/PgDn scroll · q close`);
     },
   },
+  last: {
+    usage: '/last',
+    description: 'Show the full diff / file / command output of the last change',
+    run: async (ui) => {
+      const lines = ui.lastPreviewLines?.();
+      if (!lines) return info('No file change or command yet.');
+      await page(ui, 'Last change', lines);
+    },
+  },
+  preview: {
+    usage: '/preview [smart|full|off] [lines]',
+    description: 'How writes/commands are shown: smart (compact diff, default), full, off',
+    run: (ui, arg) => {
+      const [mode, n] = String(arg ?? '').split(/\s+/);
+      if (!mode) return info(`Preview: ${ui.ui.preview} (${ui.ui.previewLines} lines max)`);
+      if (!['smart', 'full', 'off'].includes(mode)) return warn('Use: /preview smart | full | off [lines]');
+      ui.ui.preview = mode;
+      if (Number(n) > 0) ui.ui.previewLines = Math.min(200, Number(n));
+      ok(`Preview: ${mode}${Number(n) > 0 ? ` (${ui.ui.previewLines} lines max)` : ''}`);
+    },
+  },
   cache: {
     usage: '/cache [clear [files|tools|model]]',
     description: 'Local cache sizes and hit/miss counts; clear them',

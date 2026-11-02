@@ -115,7 +115,9 @@
     "rtl": "auto",
     "statusBar": true,
     "showPhases": true,
-    "codeHighlight": true
+    "codeHighlight": true,
+    "preview": "smart",
+    "previewLines": 14
   },
   "models": {
     "simple": null,

@@ -9,11 +9,11 @@ const red = fg(203);
 const yellow = fg(221);
 
 const GROUPS = {
-  Session: ['clear', 'resume', 'history', 'compact', 'export', 'undo', 'rewind', 'init', 'todos', 'exit'],
+  Session: ['clear', 'resume', 'history', 'last', 'compact', 'export', 'undo', 'rewind', 'init', 'todos', 'exit'],
   'Model & provider': ['model', 'models', 'connect', 'thinking', 'reasoning-mode'],
   'Safety & access': ['mode', 'plan', 'build', 'access', 'permissions', 'audit', 'hooks'],
   'Look around': ['context', 'stats', 'cache', 'index', 'diff', 'tools', 'mcp', 'memory', 'search', 'workspace'],
-  Interface: ['menu', 'help'],
+  Interface: ['menu', 'help', 'preview'],
 };
 
 const SHORTCUTS = [

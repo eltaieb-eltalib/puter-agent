@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import os from 'node:os';
 import { stdin, stdout } from 'node:process';
 import { card, color, gray, orange, sym, teal, violet } from '../utils/logger.js';
@@ -6,7 +7,36 @@ import { LiveLine } from './components/live.js';
 import { Transcript } from './components/transcript.js';
 import { PhaseTracker, argSummary, changesPanel, fmtMs, header, outputTail, statusBar, toolCallLine, toolResultLine } from './components/panels.js';
 import { bold as sBold, icons, paint } from './components/style.js';
+import { clipCells, stringWidth as cellWidth } from './components/text.js';
 import { phaseOf } from '../core/ledger.js';
+import { commandPreview, editPreview, fullPreview, multiEditPreview, previewBudget, writePreview } from './components/preview.js';
+
+const WRITERS = new Set(['create_file', 'edit_file', 'multi_edit']);
+const RUNNERS = new Set(['run_command', 'run_node', 'run_python']);
+/**
+ * Add up to 1 line before and 2 lines after an edit, read locally from the edited file, so the
+ * preview shows WHERE the change sits. Costs no model tokens; silently skipped if unreadable.
+ */
+function withContext(guard, data) {
+  try {
+    const { abs, inside } = guard.resolve(data.path);
+    if (!inside) return data;
+    const stat = fs.statSync(abs);
+    if (stat.size > 2_000_000) return data;
+    const lines = fs.readFileSync(abs, 'utf8').replace(/\r\n/g, '\n').split('\n');
+    const newLines = String(data.newText).replace(/\r\n/g, '\n').split('\n');
+    const first = data.startLine - 1; // 0-based index of the first edited line
+    if (lines.slice(first, first + newLines.length).join('\n') !== newLines.join('\n')) return data; // file moved on
+    const before = lines.slice(Math.max(0, first - 1), first);
+    const after = lines.slice(first + newLines.length, first + newLines.length + 2);
+    const wrap = (t) => [...before, ...String(t).replace(/\r\n/g, '\n').split('\n'), ...after].join('\n');
+    return { ...data, oldText: wrap(data.oldText), newText: wrap(data.newText), startLine: data.startLine - before.length };
+  } catch {
+    return data;
+  }
+}
+
+const commandOf = (name, args = {}) => (name === 'run_command' ? args.command : `${name === 'run_node' ? 'node' : 'python'} ${args.file ?? ''}${(args.args ?? []).length ? ` ${args.args.join(' ')}` : ''}`);
 import { resolveTheme } from './themes.js';
 import { classifyError, ErrorKind, explainError } from '../utils/errors.js';
 import { COMMANDS, chooseModel, runCommand } from './commands.js';
@@ -85,7 +115,8 @@ export class TerminalUI {
     this.spinner = new LiveLine(stdout); // name kept: commands and older code use ui.spinner
     this.toolStartedAt = 0;
     this.theme = resolveTheme(tui);
-    this.ui = { rtl: 'auto', statusBar: true, showPhases: true, codeHighlight: true, ...(settings.ui ?? {}) };
+    this.ui = { rtl: 'auto', statusBar: true, showPhases: true, codeHighlight: true, preview: 'smart', previewLines: 14, ...(settings.ui ?? {}) };
+    this.lastPreview = null; // { kind, data, title } for /last
     this.phases = new PhaseTracker();
     this.transcript = new Transcript();
     this.pending = 0; // tools started in parallel and not finished yet
@@ -139,7 +170,7 @@ export class TerminalUI {
       thinking: this.thinkingLabel(),
       access: this.agent.permissions.accessLevel,
       width: stdout.columns || 80,
-    })}\n  ${gray('/help')} ${gray('commands')}  ${sym.sep}  ${gray('/history')} ${gray('scroll back')}  ${sym.sep}  ${gray('Shift+Tab')} ${gray('mode')}  ${sym.sep}  ${gray('Ctrl+C')} ${gray('cancel')}\n`);
+    })}\n${clipCells(`  ${gray('/help')} ${gray('commands')}  ${sym.sep}  ${gray('/last')} ${gray('full diff')}  ${sym.sep}  ${gray('/history')} ${gray('scroll back')}  ${sym.sep}  ${gray('Ctrl+C')} ${gray('cancel')}`, (stdout.columns || 80) - 1)}\n`);
   }
 
   /** Non-interactive: run one request (`-p "text"`), then exit. */
@@ -418,6 +449,42 @@ export class TerminalUI {
     if (was && this.running) this.spinner.start(this.#liveLabel());
   }
 
+  /** Preview block for a finished write/command (null = use the plain result line). */
+  #preview(event, ms, width) {
+    const mode = this.ui.preview;
+    if (mode === 'off' || !event.result?.ok) return null;
+    const args = event.args ?? {};
+    const body = event.result.result ?? {};
+    const maxLines = mode === 'full' ? 400 : previewBudget({ max: this.ui.previewLines, rows: stdout.rows || 40 });
+    const time = paint.faint(` ${icons.sep} ${fmtMs(ms)}`);
+    let kind;
+    let data;
+    if (event.name === 'edit_file') {
+      kind = 'edit';
+      data = withContext(this.agent.guard, { path: body.path ?? args.path, oldText: args.old_string, newText: args.new_string, startLine: body.start_line ?? 1 });
+    } else if (event.name === 'multi_edit') {
+      kind = 'multi';
+      data = { path: body.path ?? args.path, edits: args.edits ?? [] };
+    } else if (event.name === 'create_file') {
+      kind = 'write';
+      data = { path: body.path ?? args.path, content: args.content, overwritten: body.created === false };
+    } else if (RUNNERS.has(event.name)) {
+      kind = 'command';
+      data = { command: commandOf(event.name, args), stdout: redactSecrets(body.stdout ?? ''), stderr: redactSecrets(body.stderr ?? ''), exitCode: body.exit_code, timedOut: body.timed_out };
+    } else return null;
+    this.lastPreview = { kind, data };
+    const render = { edit: editPreview, multi: multiEditPreview, write: writePreview, command: commandPreview }[kind];
+    const lines = render({ ...data, width, maxLines }).map((l) => clipCells(l, width - 1));
+    lines[0] = cellWidth(lines[0]) + cellWidth(time) < width ? lines[0] + time : lines[0];
+    return ['', ...lines];
+  }
+
+  /** Full preview of the last write/command, for /last. */
+  lastPreviewLines() {
+    if (!this.lastPreview) return null;
+    return fullPreview(this.lastPreview.kind, this.lastPreview.data, (stdout.columns || 80) - 2);
+  }
+
   #liveLabel() {
     if (this.pending > 1) return `${paint.faint('[Explore] ')}Running ${this.pending} tools in parallel`;
     return this.currentTool ? workingLabel(this.currentTool.name, this.currentTool.args) : 'Thinking';
@@ -464,7 +531,8 @@ export class TerminalUI {
         this.spinner.stop();
         this.phases.fromTool(event.name);
         this.currentTool = { name: event.name, args: event.args };
-        console.log(toolCallLine(event.name, event.args, { parallel: event.parallel, width }));
+        // Writes and commands are shown as a preview block when they finish (no duplicate line now).
+        if (!(this.ui.preview !== 'off' && (WRITERS.has(event.name) || RUNNERS.has(event.name)))) console.log(toolCallLine(event.name, event.args, { parallel: event.parallel, width }));
         this.transcript.add('tool', `${event.name} ${argSummary(event.args, 120)}`);
         this.toolStartedAt = Date.now();
         this.spinner.start(this.#liveLabel());
@@ -478,8 +546,14 @@ export class TerminalUI {
         const res = event.result;
         const inBatch = this.parallelLeft > 0;
         if (inBatch) this.parallelLeft--;
-        console.log(toolResultLine(res, { ms, width, label: inBatch ? event.name : '' }));
-        if (res.ok) {
+        const preview = this.#preview(event, ms, width);
+        if (preview) {
+          console.log(preview.join('\n'));
+        } else {
+          if (this.ui.preview !== 'off' && (WRITERS.has(event.name) || RUNNERS.has(event.name))) console.log(toolCallLine(event.name, event.args, { width }));
+          console.log(toolResultLine(res, { ms, width, label: inBatch ? event.name : '' }));
+        }
+        if (res.ok && !preview) {
           const body = res.result ?? {};
           if (body.stdout !== undefined || body.stderr !== undefined) {
             const text = redactSecrets([body.stdout, body.stderr].filter((x) => x && x.trim()).join('\n'));
@@ -541,7 +615,7 @@ export class TerminalUI {
       const text = content.trim() || '(no text reply)';
       console.log(`\n${this.#speak(text)}\n`);
       this.transcript.add('assistant', text);
-      if (this.ui.showPhases && steps > 1) console.log(this.phases.render());
+      if (this.ui.showPhases && steps > 1) console.log(this.phases.render(width));
     }
     if (this.ui.statusBar) {
       const info = this.agent.contextInfo();

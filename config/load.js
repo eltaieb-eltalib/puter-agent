@@ -85,8 +85,9 @@ export const DEFAULTS = Object.freeze({
   // JSONL log of executed write/delete/move/command operations and approval decisions.
   audit: { enabled: true },
   // Terminal UI: rtl = right-align Arabic/Hebrew paragraphs (auto | on | off); statusBar shows
-  // tokens / context / cache / latency / memory after every request.
-  ui: { rtl: 'auto', statusBar: true, showPhases: true, codeHighlight: true },
+  // tokens / context / cache / latency / memory after every request. preview = how file writes and
+  // commands are shown: smart (compact diff, adapts to terminal height) | full | off.
+  ui: { rtl: 'auto', statusBar: true, showPhases: true, codeHighlight: true, preview: 'smart', previewLines: 14 },
 });
 
 function isPlainObject(v) {
